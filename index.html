@@ -19,38 +19,42 @@
        background:#18120d;border-top:3px solid #2c2118;box-sizing:border-box;
        padding-bottom:env(safe-area-inset-bottom);}
   body.touch #pad{display:block;}
-  /* left: traditional d-pad (whole zone is touchable, slide between arms) */
-  #stickzone{position:absolute;left:0;top:0;width:55%;height:100%;}
+  /* left: traditional d-pad (whole zone touchable, slide between arms) */
+  #pad{--u:clamp(36px, 13vw, 56px);          /* d-pad arm size */
+       --ab:clamp(54px, 17vw, 80px);}        /* action button size */
+  #stickzone{position:absolute;left:0;top:0;width:52%;height:100%;}
   #dpad{position:absolute;left:50%;top:47%;transform:translate(-50%,-50%);
-        width:168px;height:168px;}
-  .darm{position:absolute;width:56px;height:56px;background:#2e241a;
+        width:calc(var(--u)*3);height:calc(var(--u)*3);}
+  .darm{position:absolute;width:var(--u);height:var(--u);background:#2e241a;
         display:flex;align-items:center;justify-content:center;color:#a08a68;
         box-shadow:0 3px 0 #0a0705, inset 0 1px 0 rgba(255,235,200,.07);}
-  .darm svg{width:30px;height:30px;}
+  .darm svg{width:55%;height:55%;}
   .darm.on{background:#3a2d1e;color:#f0e0c0;transform:translateY(2px);box-shadow:0 1px 0 #0a0705;}
-  #d-up{left:56px;top:0;border-radius:10px 10px 0 0;}
-  #d-down{left:56px;top:112px;border-radius:0 0 10px 10px;}
-  #d-left{left:0;top:56px;border-radius:10px 0 0 10px;}
-  #d-right{left:112px;top:56px;border-radius:0 10px 10px 0;}
-  #d-mid{left:56px;top:56px;box-shadow:none;border-radius:0;background:#2e241a;}
-  #d-mid::after{content:'';position:absolute;left:19px;top:19px;width:18px;height:18px;
+  #d-up{left:var(--u);top:0;border-radius:10px 10px 0 0;}
+  #d-down{left:var(--u);top:calc(var(--u)*2);border-radius:0 0 10px 10px;}
+  #d-left{left:0;top:var(--u);border-radius:10px 0 0 10px;}
+  #d-right{left:calc(var(--u)*2);top:var(--u);border-radius:0 10px 10px 0;}
+  #d-mid{left:var(--u);top:var(--u);box-shadow:none;border-radius:0;background:#2e241a;}
+  #d-mid::after{content:'';position:absolute;left:33%;top:33%;width:34%;height:34%;
         border-radius:50%;background:#1c1610;}
   /* right: action buttons */
-  #btnzone{position:absolute;right:0;top:0;width:45%;height:100%;}
-  #btns{position:absolute;right:6vw;top:34%;transform:translateY(-50%) rotate(-18deg);
-        width:180px;height:96px;}
-  .ab{position:absolute;width:80px;height:80px;border-radius:50%;
-      background:#8e3030;color:#f0d8c8;font-family:monospace;font-weight:bold;font-size:28px;
+  #btnzone{position:absolute;right:0;top:0;width:48%;height:100%;}
+  #btns{position:absolute;right:clamp(8px,4vw,26px);top:36%;
+        transform:translateY(-50%) rotate(-18deg);
+        width:calc(var(--ab)*2.3);height:calc(var(--ab)*1.25);}
+  .ab{position:absolute;width:var(--ab);height:var(--ab);border-radius:50%;
+      background:#8e3030;color:#f0d8c8;font-family:monospace;font-weight:bold;
+      font-size:calc(var(--ab)*0.35);
       display:flex;align-items:center;justify-content:center;
       box-shadow:0 4px 0 #4a1414, inset 0 -4px 8px rgba(0,0,0,.25);}
   .ab.on{transform:translateY(3px);box-shadow:0 1px 0 #4a1414, inset 0 -2px 6px rgba(0,0,0,.3);}
-  #btnB{left:0;top:20px;}
-  #btnA{left:100px;top:0;}
-  #pausebtn{position:absolute;right:6vw;bottom:14px;
+  #btnB{left:0;top:calc(var(--ab)*0.28);}
+  #btnA{left:calc(var(--ab)*1.3);top:0;}
+  #pausebtn{position:absolute;right:clamp(8px,4vw,26px);bottom:12px;
         display:flex;align-items:center;gap:7px;
-        padding:9px 22px;border-radius:14px;background:#241c14;color:#8a7758;
+        padding:8px clamp(12px,4vw,22px);border-radius:14px;background:#241c14;color:#8a7758;
         font-family:monospace;font-size:12px;letter-spacing:2px;box-shadow:0 3px 0 #0a0705;}
-  #pausebtn svg{width:16px;height:16px;}
+  #pausebtn svg{width:15px;height:15px;}
   #pausebtn.on{transform:translateY(2px);box-shadow:0 1px 0 #0a0705;}
 </style>
 </head>
@@ -82,39 +86,24 @@ const ASSETS = {"redA": {"w": 40, "h": 48, "pal": [[103, 5, 6], [169, 46, 46], [
 const MAZE = ASSETS.maze;            // wide map (rows of 0/1)
 const T = 37;                        // tile size in native px
 
-// tall map for portrait phones: generated maze (fixed seed), braided so the
-// ring always has escape loops
-function genTallMaze(cols,rows,seed){
-  let s=seed;
-  const rnd=()=>((s=(s*1103515245+12345)&0x7fffffff)/0x7fffffff);
-  const g=Array.from({length:rows},()=>Array(cols).fill(1));
-  const stack=[[1,1]]; g[1][1]=0;
-  while(stack.length){
-    const [ci,cj]=stack[stack.length-1];
-    const dirs=[[2,0],[-2,0],[0,2],[0,-2]].filter(([di,dj])=>{
-      const ni2=ci+di,nj2=cj+dj;
-      return ni2>0&&nj2>0&&ni2<cols-1&&nj2<rows-1&&g[nj2][ni2]===1;
-    });
-    if(!dirs.length){ stack.pop(); continue; }
-    const [di,dj]=dirs[(rnd()*dirs.length)|0];
-    g[cj+dj/2][ci+di/2]=0; g[cj+dj][ci+di]=0;
-    stack.push([ci+di,cj+dj]);
-  }
-  // braid: open most dead ends so corridors loop
-  for(let j=1;j<rows-1;j++)for(let i=1;i<cols-1;i++){
-    if(g[j][i]!==0) continue;
-    const walls=[[1,0],[-1,0],[0,1],[0,-1]].filter(([di,dj])=>g[j+dj][i+di]===1);
-    if(walls.length>=3 && rnd()<0.85){
-      const opts=walls.filter(([di,dj])=>{
-        const ni2=i+2*di,nj2=j+2*dj;
-        return ni2>0&&nj2>0&&ni2<cols-1&&nj2<rows-1&&g[nj2][ni2]===0;
-      });
-      if(opts.length){ const [di,dj]=opts[(rnd()*opts.length)|0]; g[j+dj][i+di]=0; }
-    }
-  }
-  return g;
-}
-const MAZE_V = genTallMaze(17,25,20260716);
+// tall map for portrait phones: a simple island course — border frame with
+// floating dirt blocks, wide corridors, loops everywhere for the chase
+const MAZE_V = [
+"111111111",
+"1.......1",
+"1.......1",
+"1..111..1",
+"1..111..1",
+"1.......1",
+"1.......1",
+"1.11.11.1",
+"1.......1",
+"1.......1",
+"1..111..1",
+"1..111..1",
+"1.......1",
+"111111111",
+].map(r=>[...r].map(c=>c==='1'?1:0));
 
 // title grids: border frame + floating island for the logo
 function makeTitleGrid(cols,rows,isl){
@@ -128,10 +117,12 @@ const LAYOUTS={
   wide:{
     maze:MAZE, isl:{i0:9,i1:20,j0:7,j1:11},
     spawn:{x:13.5,y:13}, blueIdle:{x:12.2,y:13}, ringCell:{i:17,j:14},
+    logoPx:11, promptPx:6,
   },
   tall:{
-    maze:MAZE_V, isl:{i0:2,i1:14,j0:9,j1:13},
-    spawn:{x:7.5,y:24}, blueIdle:{x:5.5,y:24}, ringCell:{i:9,j:1},
+    maze:MAZE_V, isl:{i0:1,i1:7,j0:4,j1:8},
+    spawn:{x:4.5,y:13}, blueIdle:{x:2.5,y:13}, ringCell:{i:4,j:1},
+    logoPx:8, promptPx:4,
   },
 };
 for(const L of Object.values(LAYOUTS)){
@@ -840,8 +831,8 @@ function enterTitle(lay){
   setWorld(LAY.title);
   ISL={x0:LAY.isl.i0*T, x1:(LAY.isl.i1+1)*T, y0:LAY.isl.j0*T, y1:(LAY.isl.j1+1)*T};
   ISLW=ISL.x1-ISL.x0; ISLH=ISL.y1-ISL.y0; ISLP=2*(ISLW+ISLH);
-  tRed = new Walker(ISL.x0+3.5*T, LAY.isl.j0*T);   // on top of the island
-  tRing= new Walker(ISL.x0+9.5*T, LAY.isl.j0*T);
+  tRed = new Walker(ISL.x0+ISLW*0.28, LAY.isl.j0*T);   // on top of the island
+  tRing= new Walker(ISL.x0+ISLW*0.72, LAY.isl.j0*T);
   tSt.surge=0;
   tSt.redDir=tSt.ringDir = Math.random()<0.5?1:-1;  // vary starting direction
   tRed.face=tSt.redDir;  tRed.v=2.5*tSt.redDir;
@@ -1075,11 +1066,11 @@ function render(){
     ctx.fillStyle=gg; ctx.fillRect(rx-70,ry-70,140,140);
     ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
     // logo on the island
-    pixText(ctx,'RING', WNAT/2, ISL.y0+0.35*T, 11, F57,5,7, '#f8d838','#c8952c', true);
-    pixText(ctx,'CHASE',WNAT/2, ISL.y0+2.65*T, 11, F57,5,7, '#f8d838','#c8952c', true);
+    pixText(ctx,'RING', WNAT/2, ISL.y0+0.3*T, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
+    pixText(ctx,'CHASE',WNAT/2, ISL.y0+0.3*T+7*LAY.logoPx+10, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
     // flashing prompt
     if(frame%70<45)
-      pixText(ctx,'PRESS ANY BUTTON', WNAT/2, ISL.y1+2.4*T, 6, F35,3,5, '#f8f0dc','#c8b890', true);
+      pixText(ctx,'PRESS ANY BUTTON', WNAT/2, ISL.y1+2.0*T, LAY.promptPx, F35,3,5, '#f8f0dc','#c8b890', true);
     // cozy vignette
     const tv=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
     tv.addColorStop(0,'rgba(0,0,0,0)'); tv.addColorStop(1,'rgba(15,6,0,0.30)');
@@ -1119,12 +1110,13 @@ function render(){
   if(state==='paused'){
     ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,WNAT,HNAT);
     ctx.textAlign='center';
-    ctx.font='bold 46px monospace';
+    const fp=Math.min(46, WNAT*0.075);
+    ctx.font='bold '+fp+'px monospace';
     ctx.fillStyle='#1a0d04'; ctx.fillText('PAUSED', WNAT/2+3, HNAT/2-5);
     ctx.fillStyle='#f8e8b0'; ctx.fillText('PAUSED', WNAT/2, HNAT/2-8);
-    ctx.font='20px monospace';
+    ctx.font=Math.min(20, WNAT*0.036)+'px monospace';
     ctx.fillStyle='#e8d8b0';
-    ctx.fillText('P / Start / pause button to resume', WNAT/2, HNAT/2+30);
+    ctx.fillText('P / Start / pause button to resume', WNAT/2, HNAT/2+fp*0.7);
   }
 
   if(state==='won'){
@@ -1177,16 +1169,17 @@ function render(){
       ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
     }
     ctx.textAlign='center';
-    ctx.font='bold 52px monospace';
+    const fw=Math.min(52, WNAT*0.082);
+    ctx.font='bold '+fw+'px monospace';
     ctx.fillStyle='#1a0d04';
     ctx.fillText('YOU CAUGHT THE RING!', WNAT/2+3, HNAT/2-7);
     ctx.fillStyle='#f8e8b0';
     ctx.fillText('YOU CAUGHT THE RING!', WNAT/2, HNAT/2-10);
-    ctx.font='24px monospace';
+    ctx.font=Math.min(24, WNAT*0.04)+'px monospace';
     ctx.fillStyle='#1a0d04';
-    ctx.fillText('press R to play again', WNAT/2+2, HNAT/2+38);
+    ctx.fillText('press A / R to play again', WNAT/2+2, HNAT/2+fw*0.75+2);
     ctx.fillStyle='#f8e8b0';
-    ctx.fillText('press R to play again', WNAT/2, HNAT/2+36);
+    ctx.fillText('press A / R to play again', WNAT/2, HNAT/2+fw*0.75);
   }
 }
 enterTitle(preferredLayout());
