@@ -16,14 +16,14 @@
             touch-action:none;-webkit-user-select:none;user-select:none;}
   body{display:flex;flex-direction:column;}
   #wrap{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:0;}
-  body.touch #wrap{padding-top:calc(env(safe-area-inset-top, 0px) + 36px);box-sizing:border-box;}
+  body.touch #wrap{padding-top:calc(env(safe-area-inset-top, 0px) + 12px);box-sizing:border-box;}
   canvas{image-rendering:pixelated;image-rendering:crisp-edges;}
   #ui{position:fixed;top:8px;left:50%;transform:translateX(-50%);color:#e8d8b0;
       font-family:monospace;font-size:13px;text-align:center;opacity:.85;pointer-events:none;
       text-shadow:1px 1px 0 #000;white-space:nowrap;max-width:96vw;overflow:hidden;}
   /* ---- touch controls: fixed-height bar at the bottom (portrait phones) ---- */
   #pad{display:none;position:relative;flex:0 0 auto;
-       height:calc(clamp(215px, 34vh, 340px) + env(safe-area-inset-bottom, 0px));
+       height:calc(var(--u)*3 + 28px + env(safe-area-inset-bottom, 0px));
        background:#18120d;border-top:3px solid #2c2118;box-sizing:border-box;
        padding-bottom:env(safe-area-inset-bottom, 0px);}
   body.touch #pad{display:block;}
@@ -32,7 +32,7 @@
   #pad{--u:clamp(40px, 14.5vw, 64px);        /* d-pad arm size */
        --ab:clamp(58px, 18.5vw, 92px);}      /* action button size */
   #stickzone{position:absolute;left:0;top:0;width:52%;height:calc(100% - env(safe-area-inset-bottom, 0px));}
-  #dpad{position:absolute;left:50%;top:58%;transform:translate(-50%,-50%);
+  #dpad{position:absolute;left:50%;top:14px;transform:translateX(-50%);
         width:calc(var(--u)*3);height:calc(var(--u)*3);}
   .darm{position:absolute;width:var(--u);height:var(--u);background:#2e241a;
         display:flex;align-items:center;justify-content:center;color:#a08a68;
@@ -48,7 +48,7 @@
         border-radius:50%;background:#1c1610;}
   /* right: action buttons */
   #btnzone{position:absolute;right:0;top:0;width:48%;height:calc(100% - env(safe-area-inset-bottom, 0px));}
-  #btns{position:absolute;right:clamp(8px,4vw,26px);top:50%;
+  #btns{position:absolute;right:clamp(8px,4vw,26px);top:calc(14px + var(--u)*1.5);
         transform:translateY(-50%) rotate(-18deg);
         width:calc(var(--ab)*2.3);height:calc(var(--ab)*1.25);}
   .ab{position:absolute;width:var(--ab);height:var(--ab);border-radius:50%;
