@@ -932,3 +932,138 @@ function loop(){
     // jump on press edge; hold for variable height; Start pauses (or restarts after a win)
     if(pad.jump&&!padJumpPrev&&state==='play') player.jump(J);
     if(pad.jump) player.jheld=true;
+    else if(padJumpPrev&&!keys.Space&&!keys.ArrowUp&&!keys.KeyW) player.jheld=false;
+    if(pad.start&&!padStartPrev){
+      if(state==='won') reset(); else togglePause();
+    }
+    padJumpPrev=pad.jump; padStartPrev=pad.start;
+  }
+  if(state==='play'){
+    let ix=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
+    let iy=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
+    if(pad){ ix=ix||pad.gx; iy=iy||pad.gy; }
+    ix=ix||touchIn.x; iy=iy||touchIn.y;
+    player.drive(ix,iy,ACC,MAX,FRIC,SKID);
+    player.airControl(ix,iy);
+    player.step();
+    trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
+    if(trail.length>400) trail.shift();
+    if(frame%20===0) bfs();
+    ringStep();
+    // catch check
+    const pr = Math.hypot(player.x-(player.n.x*20)-ring.x+0, player.y-(player.n.y*20)-ring.y);
+    const centerX=player.x+player.n.x*20, centerY=player.y+player.n.y*20;
+    if(Math.hypot(centerX-ring.x, centerY-ring.y) < 30){
+      state='won';
+      winFx={x:ring.x, y:ring.y, t:0};
+      if(music&&!music.muted) jingle();
+    }
+  }
+
+  // render
+  ctx.fillStyle='#070402';
+  ctx.fillRect(0,0,WNAT,HNAT);
+  ctx.drawImage(DIRT,0,0);
+
+  // ring (not animated, just moves) with a soft warm glow.
+  // once caught, the world ring disappears — it's drawn in the player's hands instead
+  if(state!=='won'){
+    const g=ctx.createRadialGradient(ring.x,ring.y,4,ring.x,ring.y,70);
+    g.addColorStop(0,'rgba(255,230,150,0.20)'); g.addColorStop(1,'rgba(255,230,150,0)');
+    ctx.fillStyle=g; ctx.fillRect(ring.x-70,ring.y-70,140,140);
+    ctx.drawImage(SPR.ring, Math.round(ring.x-SPR.ring.width/2), Math.round(ring.y-SPR.ring.height/2));
+  }
+
+  // blue follower
+  const bs = trailFollow();
+  if(bs) drawWalker(null, SPR.blueA, SPR.blueB, bs, blueVis);
+  else {
+    // idle beside start
+    drawWalker(null, SPR.blueA, SPR.blueB, {x:12.2*T,y:13*T,n:{x:0,y:-1},face:1,animT:0}, blueVis);
+  }
+  // red player
+  drawWalker(player, SPR.redA, SPR.redB, null, redVis);
+
+  // gentle warm vignette (warmth lives in the dirt palette; corridors stay deep dark)
+  const vg=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(15,6,0,0.30)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,WNAT,HNAT);
+
+  if(state==='paused'){
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,WNAT,HNAT);
+    ctx.textAlign='center';
+    ctx.font='bold 46px monospace';
+    ctx.fillStyle='#1a0d04'; ctx.fillText('PAUSED', WNAT/2+3, HNAT/2-5);
+    ctx.fillStyle='#f8e8b0'; ctx.fillText('PAUSED', WNAT/2, HNAT/2-8);
+    ctx.font='20px monospace';
+    ctx.fillStyle='#e8d8b0';
+    ctx.fillText('P / Start / pause button to resume', WNAT/2, HNAT/2+30);
+  }
+
+  if(state==='won'){
+    // win burst: bold full-screen 16-pointed star, concentric thick bands,
+    // emanating from the catch point then flashing red / white / yellow
+    if(winFx){
+      winFx.t++;
+      const ease=p=>1-Math.pow(1-p,3);
+      const grow=ease(Math.min(winFx.t/20,1));
+      const R=Math.max(WNAT,HNAT)*0.82*grow;   // gold band reaches past screen edges
+      if(R>6){
+        const FS=6;                            // chunky pixel-step size
+        const ec=winFx.cv||(winFx.cv=document.createElement('canvas'));
+        ec.width=Math.ceil(WNAT/FS); ec.height=Math.ceil(HNAT/FS);
+        const g=ec.getContext('2d');
+        const cx=winFx.x/FS, cy=winFx.y/FS, RR=R/FS;
+        function star(scale){
+          g.beginPath();
+          for(let i=0;i<32;i++){
+            const a=-Math.PI/2 + i*Math.PI/16;
+            const rad=(i%2===0?RR:RR*0.52)*scale;
+            const x=cx+Math.cos(a)*rad, y=cy+Math.sin(a)*rad;
+            i?g.lineTo(x,y):g.moveTo(x,y);
+          }
+          g.closePath();
+        }
+        const punch=s=>{g.globalCompositeOperation='destination-out';star(s);g.fill();
+                        g.globalCompositeOperation='source-over';};
+        const FLASH=['#d96a5e','#f8f8f4','#f8d838'];
+        const f=Math.floor(winFx.t/6);
+        // gold band gradient (olive top -> bright gold bottom)
+        const gold=g.createLinearGradient(0,0,0,ec.height);
+        gold.addColorStop(0,'#a89030'); gold.addColorStop(1,'#f0d848');
+        g.clearRect(0,0,ec.width,ec.height);
+        // three concentric star bands, fully transparent between them
+        g.fillStyle=FLASH[(f+2)%3]; star(1.34); g.fill();  // outermost band
+        punch(1.10);
+        g.fillStyle=gold; star(1.00); g.fill();            // huge gold band
+        punch(0.62);
+        g.fillStyle=FLASH[f%3]; star(0.37); g.fill();      // inner salmon star
+        punch(0.21);                                        // open center around the pair
+        // snap edge alpha so the upscale gives hard pixel steps
+        const id=g.getImageData(0,0,ec.width,ec.height);
+        for(let p=3;p<id.data.length;p+=4) id.data[p]=id.data[p]>127?255:0;
+        g.putImageData(id,0,0);
+        ctx.imageSmoothingEnabled=false;
+        ctx.drawImage(ec,0,0,ec.width,ec.height,0,0,ec.width*FS,ec.height*FS);
+      }
+      // the champion holds the ring overhead
+      const rx=player.x+player.n.x*54, ry=player.y+player.n.y*54;
+      ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
+    }
+    ctx.textAlign='center';
+    ctx.font='bold 52px monospace';
+    ctx.fillStyle='#1a0d04';
+    ctx.fillText('YOU CAUGHT THE RING!', WNAT/2+3, HNAT/2-7);
+    ctx.fillStyle='#f8e8b0';
+    ctx.fillText('YOU CAUGHT THE RING!', WNAT/2, HNAT/2-10);
+    ctx.font='24px monospace';
+    ctx.fillStyle='#1a0d04';
+    ctx.fillText('press R to play again', WNAT/2+2, HNAT/2+38);
+    ctx.fillStyle='#f8e8b0';
+    ctx.fillText('press R to play again', WNAT/2, HNAT/2+36);
+  }
+}
+loop();
+</script>
+</body>
+</html>
