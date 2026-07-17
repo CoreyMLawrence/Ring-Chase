@@ -86,23 +86,25 @@ const ASSETS = {"redA": {"w": 40, "h": 48, "pal": [[103, 5, 6], [169, 46, 46], [
 const MAZE = ASSETS.maze;            // wide map (rows of 0/1)
 const T = 37;                        // tile size in native px
 
-// tall map for portrait phones: a simple island course — border frame with
-// floating dirt blocks, wide corridors, loops everywhere for the chase
+// tall map for portrait phones: bordered course with islands, side stubs,
+// gated rows and an inner pocket — every wall is circumnavigable
 const MAZE_V = [
-"111111111",
-"1.......1",
-"1.......1",
-"1..111..1",
-"1..111..1",
-"1.......1",
-"1.......1",
-"1.11.11.1",
-"1.......1",
-"1.......1",
-"1..111..1",
-"1..111..1",
-"1.......1",
-"111111111",
+"11111111111",
+"1.........1",
+"1.11.1.11.1",
+"1....1....1",
+"1.11.1.11.1",
+"1.........1",
+"111.111.111",
+"1.........1",
+"1.1.111.1.1",
+"1.1.....1.1",
+"1.1.111.1.1",
+"1.........1",
+"11.11111.11",
+"1.........1",
+"1.11...11.1",
+"11111111111",
 ].map(r=>[...r].map(c=>c==='1'?1:0));
 
 // title grids: border frame + floating island for the logo
@@ -120,8 +122,8 @@ const LAYOUTS={
     logoPx:11, promptPx:6,
   },
   tall:{
-    maze:MAZE_V, isl:{i0:1,i1:7,j0:4,j1:8},
-    spawn:{x:4.5,y:13}, blueIdle:{x:2.5,y:13}, ringCell:{i:4,j:1},
+    maze:MAZE_V, isl:{i0:2,i1:8,j0:4,j1:10},
+    spawn:{x:5.5,y:15}, blueIdle:{x:4.2,y:15}, ringCell:{i:5,j:1},
     logoPx:8, promptPx:4,
   },
 };
@@ -149,9 +151,22 @@ const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 cv.width = WNAT; cv.height = HNAT;
 const wrap = document.getElementById('wrap');
+let dirtTileURL=null;
 function fit(){
   const s = Math.min(wrap.clientWidth/WNAT, wrap.clientHeight/HNAT);
   cv.style.width = (WNAT*s)+'px'; cv.style.height = (HNAT*s)+'px';
+  // portrait: any space the map doesn't cover is filled with dirt
+  if(document.body.classList.contains('touch')){
+    if(!dirtTileURL){
+      const solid=Array.from({length:6},()=>Array(6).fill(1));
+      dirtTileURL = makeDirt(solid).toDataURL();
+    }
+    wrap.style.backgroundImage = 'url('+dirtTileURL+')';
+    const bs = 6*T*s;
+    wrap.style.backgroundSize = bs+'px '+bs+'px';
+  } else {
+    wrap.style.backgroundImage = 'none';
+  }
 }
 addEventListener('resize', fit);
 // touch devices get the Game Boy pad on the bottom half (unless a controller is connected)
@@ -1066,8 +1081,10 @@ function render(){
     ctx.fillStyle=gg; ctx.fillRect(rx-70,ry-70,140,140);
     ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
     // logo on the island
-    pixText(ctx,'RING', WNAT/2, ISL.y0+0.3*T, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
-    pixText(ctx,'CHASE',WNAT/2, ISL.y0+0.3*T+7*LAY.logoPx+10, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
+    const logoH = 2*7*LAY.logoPx + 10;                 // two lines + gap
+    const logoY = ISL.y0 + (ISLH - logoH)/2;           // centred on the block
+    pixText(ctx,'RING', WNAT/2, logoY, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
+    pixText(ctx,'CHASE',WNAT/2, logoY+7*LAY.logoPx+10, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
     // flashing prompt
     if(frame%70<45)
       pixText(ctx,'PRESS ANY BUTTON', WNAT/2, ISL.y1+2.0*T, LAY.promptPx, F35,3,5, '#f8f0dc','#c8b890', true);
