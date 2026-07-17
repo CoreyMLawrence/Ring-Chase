@@ -68,7 +68,16 @@ const MAZE = ASSETS.maze;            // rows of 0/1
 const NJ = MAZE.length, NI = MAZE[0].length;
 const T = 37;                        // tile size in native px
 const WNAT = NI*T, HNAT = NJ*T;
-const solidCell = (i,j)=> (i<0||j<0||i>=NI||j>=NJ) ? true : MAZE[j][i]===1;
+// title-screen layout: border frame + floating island for the logo
+const TMAZE = (()=> {
+  const g=Array.from({length:NJ},()=>Array(NI).fill(0));
+  for(let i=0;i<NI;i++){ g[0][i]=1; g[NJ-1][i]=1; }
+  for(let j=0;j<NJ;j++){ g[j][0]=1; g[j][NI-1]=1; }
+  for(let j=7;j<=11;j++) for(let i=9;i<=20;i++) g[j][i]=1;
+  return g;
+})();
+let GRID = TMAZE;                    // active collision grid (title first)
+const solidCell = (i,j)=> (i<0||j<0||i>=NI||j>=NJ) ? true : GRID[j][i]===1;
 const solidAt = (x,y)=> solidCell(Math.floor(x/T), Math.floor(y/T));
 
 // ---------- canvas ----------
@@ -113,9 +122,10 @@ const SPR = {
 };
 
 // ---------- dirt texture ----------
-function makeDirt(){
+function makeDirt(grid){
   // texture matched to the source screenshots: dark chocolate base,
   // small warm squiggle speckles (2-3px), ragged bitten edges
+  const solidCell=(i,j)=>(i<0||j<0||i>=NI||j>=NJ)?true:grid[j][i]===1;
   const c = document.createElement('canvas');
   c.width = WNAT; c.height = HNAT;
   const g = c.getContext('2d');
@@ -160,7 +170,8 @@ function makeDirt(){
   }
   return c;
 }
-const DIRT = makeDirt();
+const DIRT = makeDirt(MAZE);
+const TDIRT = makeDirt(TMAZE);
 
 // ---------- surface walker ----------
 // normal n: unit vector pointing away from surface into open space
@@ -400,6 +411,7 @@ addEventListener('keydown',e=>{
   keys[e.code]=true;
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if(e.repeat) return;
+  if(state==='title' && !['KeyM','KeyH'].includes(e.code)){ startGame(); return; }
   if(state==='play'){
     if(e.code==='Space') player.jump(J);
     // Up/W also jump, but only when standing on a floor (on walls they mean "run up")
@@ -618,6 +630,7 @@ const touchIn={x:0,y:0};
   function bindJump(btn){
     btn.addEventListener('touchstart',e=>{
       e.preventDefault(); btn.classList.add('on');
+      if(state==='title'){ startGame(); return; }
       if(state==='won') reset();
       else if(state==='play'){ player.jump(J); player.jheld=true; }
     },{passive:false});
@@ -630,7 +643,12 @@ const touchIn={x:0,y:0};
 
   const pb=el('pausebtn');
   pb.addEventListener('touchstart',e=>{
-    e.preventDefault(); pb.classList.add('on'); togglePause();
+    e.preventDefault(); pb.classList.add('on');
+    if(state==='title'){ startGame(); return; }
+    togglePause();
+  },{passive:false});
+  dpad.addEventListener('touchstart',e=>{
+    if(state==='title'){ e.preventDefault(); startGame(); }
   },{passive:false});
   for(const ev of ['touchend','touchcancel']) pb.addEventListener(ev,e=>{
     e.preventDefault(); pb.classList.remove('on');
@@ -722,8 +740,95 @@ function pollPad(){
   return null;
 }
 
-let state='play';
+let state='title';
 let winFx=null;
+
+// ---------- title screen ----------
+// AI red chases the ring around the logo island forever; blue tags along.
+// Rubber-band keeps the ring just out of reach; direction and pace vary.
+const tRed = new Walker(12.5*T, 7*T);      // on top of the island
+const tRing = new Walker(18.5*T, 7*T);
+const tSt = {surge:0, redDir:1, ringDir:1};
+if(Math.random()<0.5){ tSt.redDir=tSt.ringDir=-1; }   // vary starting direction
+tRed.face=tSt.redDir;  tRed.v=2.5*tSt.redDir;
+tRing.face=tSt.ringDir; tRing.v=2.9*tSt.ringDir;
+
+// perimeter coordinate around the logo island (face = +1 always increases s)
+const ISL={x0:9*T, x1:21*T, y0:7*T, y1:12*T};
+const ISLW=ISL.x1-ISL.x0, ISLH=ISL.y1-ISL.y0, ISLP=2*(ISLW+ISLH);
+function perimS(w){
+  if(w.n.y===-1) return w.x-ISL.x0;                       // top
+  if(w.n.x===1)  return ISLW + (w.y-ISL.y0);              // right
+  if(w.n.y===1)  return ISLW+ISLH + (ISL.x1-w.x);         // bottom
+  return ISLW+ISLH+ISLW + (ISL.y1-w.y);                   // left
+}
+function titleUpdate(){
+  const lead=(perimS(tRing)-perimS(tRed)+ISLP)%ISLP;      // ring's lead ahead of red (+s)
+  const gap=Math.min(lead, ISLP-lead);                    // shortest way around
+  // pick directions with hysteresis: ring flees the short way, red chases it
+  if(lead < ISLP*0.44){ tSt.ringDir=1;  tSt.redDir=1; }
+  else if(lead > ISLP*0.56){ tSt.ringDir=-1; tSt.redDir=-1; }
+  // ring speed: rubber band, never catchable
+  let rs = gap<95 ? 3.7 : gap<160 ? 3.0 : gap>330 ? 2.0 : 2.6;
+  if(gap<75) rs = Math.abs(tRed.v)+1.2;
+  if(tSt.surge>0){ rs+=0.9; tSt.surge--; }
+  else if(Math.random()<0.004) tSt.surge=50+Math.random()*70;   // playful sprint
+  tRing.v += (tSt.ringDir*rs - tRing.v)*0.09;
+  tRing.face=Math.sign(tRing.v)||1;
+  tRing.step();
+  // red barrels after it (a touch slower on average)
+  tRed.v += (tSt.redDir*2.9 - tRed.v)*0.055;
+  tRed.face=Math.sign(tRed.v)||1;
+  tRed.animT+=Math.abs(tRed.v);
+  tRed.step();
+  trail.push({x:tRed.x,y:tRed.y,n:{...tRed.n},face:tRed.face,animT:tRed.animT});
+  if(trail.length>400) trail.shift();
+}
+
+// tiny pixel fonts
+const F57={ // 5x7 logo font
+ R:['XXXX.','X...X','X...X','XXXX.','X.X..','X..X.','X...X'],
+ I:['XXXXX','..X..','..X..','..X..','..X..','..X..','XXXXX'],
+ N:['X...X','XX..X','XX..X','X.X.X','X..XX','X..XX','X...X'],
+ G:['.XXXX','X....','X....','X.XXX','X...X','X...X','.XXX.'],
+ C:['.XXXX','X....','X....','X....','X....','X....','.XXXX'],
+ H:['X...X','X...X','X...X','XXXXX','X...X','X...X','X...X'],
+ A:['.XXX.','X...X','X...X','XXXXX','X...X','X...X','X...X'],
+ S:['.XXXX','X....','X....','.XXX.','....X','....X','XXXX.'],
+ E:['XXXXX','X....','X....','XXXX.','X....','X....','XXXXX'],
+ ' ':['.....','.....','.....','.....','.....','.....','.....'],
+};
+const F35={ // 3x5 prompt font
+ P:['XX.','X.X','XX.','X..','X..'], R:['XX.','X.X','XX.','X.X','X.X'],
+ E:['XXX','X..','XX.','X..','XXX'], S:['.XX','X..','.X.','..X','XX.'],
+ A:['.X.','X.X','XXX','X.X','X.X'], N:['X.X','XXX','XXX','X.X','X.X'],
+ Y:['X.X','X.X','.X.','.X.','.X.'], B:['XX.','X.X','XX.','X.X','XX.'],
+ U:['X.X','X.X','X.X','X.X','XXX'], T:['XXX','.X.','.X.','.X.','.X.'],
+ O:['XXX','X.X','X.X','X.X','XXX'], ' ':['...','...','...','...','...'],
+};
+function pixText(g,txt,cx,y,px,font,cw,rows,colTop,colBot,shadow){
+  const w=txt.length*(cw+1)-1;
+  let x=Math.round(cx-w*px/2);
+  for(const ch of txt){
+    const gl=font[ch]||font[' '];
+    for(let r=0;r<rows;r++)for(let c=0;c<cw;c++){
+      if(gl[r][c]==='X'){
+        if(shadow){ g.fillStyle='#1a0d04'; g.fillRect(x+c*px+px*0.5, y+r*px+px*0.5, px, px); }
+        g.fillStyle = r<rows*0.55 ? colTop : colBot;
+        g.fillRect(x+c*px, y+r*px, px, px);
+      }
+    }
+    x+=(cw+1)*px;
+  }
+}
+
+function startGame(){
+  GRID=MAZE;
+  trail.length=0;
+  reset();
+  state='play';
+}
+addEventListener('mousedown',()=>{ if(state==='title') startGame(); });
 function reset(){
   winFx=null;
   if(music){ music.ptr=[0,0,0]; music.loopStart=actx.currentTime+0.15; }
@@ -792,143 +897,38 @@ let frame=0;
 function loop(){
   requestAnimationFrame(loop);
   frame++;
+  if(state==='title'){
+    const tp=pollPad();
+    if(tp && (tp.jump||tp.start||tp.gx||tp.gy)){ startGame(); return; }
+    titleUpdate();
+    // --- render title ---
+    ctx.fillStyle='#070402'; ctx.fillRect(0,0,WNAT,HNAT);
+    ctx.drawImage(TDIRT,0,0);
+    // blue trails, red chases
+    const tbs=trailFollow();
+    if(tbs) drawWalker(null,SPR.blueA,SPR.blueB,tbs,blueVis);
+    drawWalker(null,SPR.redA,SPR.redB,
+      {x:tRed.x,y:tRed.y,n:tRed.n,face:tRed.face,animT:tRed.animT},redVis);
+    // the ring hovers just off its surface, glowing
+    const rx=tRing.x+tRing.n.x*26, ry=tRing.y+tRing.n.y*26 + Math.sin(frame*0.08)*2;
+    const gg=ctx.createRadialGradient(rx,ry,4,rx,ry,70);
+    gg.addColorStop(0,'rgba(255,230,150,0.20)'); gg.addColorStop(1,'rgba(255,230,150,0)');
+    ctx.fillStyle=gg; ctx.fillRect(rx-70,ry-70,140,140);
+    ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
+    // logo on the island
+    pixText(ctx,'RING', WNAT/2, 7.35*T, 11, F57,5,7, '#f8d838','#c8952c', true);
+    pixText(ctx,'CHASE',WNAT/2, 9.65*T, 11, F57,5,7, '#f8d838','#c8952c', true);
+    // flashing prompt
+    if(frame%70<45)
+      pixText(ctx,'PRESS ANY BUTTON', WNAT/2, 14.4*T, 6, F35,3,5, '#f8f0dc','#c8b890', true);
+    // cozy vignette
+    const tv=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
+    tv.addColorStop(0,'rgba(0,0,0,0)'); tv.addColorStop(1,'rgba(15,6,0,0.30)');
+    ctx.fillStyle=tv; ctx.fillRect(0,0,WNAT,HNAT);
+    return;
+  }
   const pad=pollPad();
   if(pad){
     // jump on press edge; hold for variable height; Start pauses (or restarts after a win)
     if(pad.jump&&!padJumpPrev&&state==='play') player.jump(J);
     if(pad.jump) player.jheld=true;
-    else if(padJumpPrev&&!keys.Space&&!keys.ArrowUp&&!keys.KeyW) player.jheld=false;
-    if(pad.start&&!padStartPrev){
-      if(state==='won') reset(); else togglePause();
-    }
-    padJumpPrev=pad.jump; padStartPrev=pad.start;
-  }
-  if(state==='play'){
-    let ix=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
-    let iy=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
-    if(pad){ ix=ix||pad.gx; iy=iy||pad.gy; }
-    ix=ix||touchIn.x; iy=iy||touchIn.y;
-    player.drive(ix,iy,ACC,MAX,FRIC,SKID);
-    player.airControl(ix,iy);
-    player.step();
-    trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
-    if(trail.length>400) trail.shift();
-    if(frame%20===0) bfs();
-    ringStep();
-    // catch check
-    const pr = Math.hypot(player.x-(player.n.x*20)-ring.x+0, player.y-(player.n.y*20)-ring.y);
-    const centerX=player.x+player.n.x*20, centerY=player.y+player.n.y*20;
-    if(Math.hypot(centerX-ring.x, centerY-ring.y) < 30){
-      state='won';
-      winFx={x:ring.x, y:ring.y, t:0};
-      if(music&&!music.muted) jingle();
-    }
-  }
-
-  // render
-  ctx.fillStyle='#070402';
-  ctx.fillRect(0,0,WNAT,HNAT);
-  ctx.drawImage(DIRT,0,0);
-
-  // ring (not animated, just moves) with a soft warm glow.
-  // once caught, the world ring disappears — it's drawn in the player's hands instead
-  if(state!=='won'){
-    const g=ctx.createRadialGradient(ring.x,ring.y,4,ring.x,ring.y,70);
-    g.addColorStop(0,'rgba(255,230,150,0.20)'); g.addColorStop(1,'rgba(255,230,150,0)');
-    ctx.fillStyle=g; ctx.fillRect(ring.x-70,ring.y-70,140,140);
-    ctx.drawImage(SPR.ring, Math.round(ring.x-SPR.ring.width/2), Math.round(ring.y-SPR.ring.height/2));
-  }
-
-  // blue follower
-  const bs = trailFollow();
-  if(bs) drawWalker(null, SPR.blueA, SPR.blueB, bs, blueVis);
-  else {
-    // idle beside start
-    drawWalker(null, SPR.blueA, SPR.blueB, {x:12.2*T,y:13*T,n:{x:0,y:-1},face:1,animT:0}, blueVis);
-  }
-  // red player
-  drawWalker(player, SPR.redA, SPR.redB, null, redVis);
-
-  // gentle warm vignette (warmth lives in the dirt palette; corridors stay deep dark)
-  const vg=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
-  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(15,6,0,0.30)');
-  ctx.fillStyle=vg; ctx.fillRect(0,0,WNAT,HNAT);
-
-  if(state==='paused'){
-    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,WNAT,HNAT);
-    ctx.textAlign='center';
-    ctx.font='bold 46px monospace';
-    ctx.fillStyle='#1a0d04'; ctx.fillText('PAUSED', WNAT/2+3, HNAT/2-5);
-    ctx.fillStyle='#f8e8b0'; ctx.fillText('PAUSED', WNAT/2, HNAT/2-8);
-    ctx.font='20px monospace';
-    ctx.fillStyle='#e8d8b0';
-    ctx.fillText('P / Start / pause button to resume', WNAT/2, HNAT/2+30);
-  }
-
-  if(state==='won'){
-    // win burst: bold full-screen 16-pointed star, concentric thick bands,
-    // emanating from the catch point then flashing red / white / yellow
-    if(winFx){
-      winFx.t++;
-      const ease=p=>1-Math.pow(1-p,3);
-      const grow=ease(Math.min(winFx.t/20,1));
-      const R=Math.max(WNAT,HNAT)*0.82*grow;   // gold band reaches past screen edges
-      if(R>6){
-        const FS=6;                            // chunky pixel-step size
-        const ec=winFx.cv||(winFx.cv=document.createElement('canvas'));
-        ec.width=Math.ceil(WNAT/FS); ec.height=Math.ceil(HNAT/FS);
-        const g=ec.getContext('2d');
-        const cx=winFx.x/FS, cy=winFx.y/FS, RR=R/FS;
-        function star(scale){
-          g.beginPath();
-          for(let i=0;i<32;i++){
-            const a=-Math.PI/2 + i*Math.PI/16;
-            const rad=(i%2===0?RR:RR*0.52)*scale;
-            const x=cx+Math.cos(a)*rad, y=cy+Math.sin(a)*rad;
-            i?g.lineTo(x,y):g.moveTo(x,y);
-          }
-          g.closePath();
-        }
-        const punch=s=>{g.globalCompositeOperation='destination-out';star(s);g.fill();
-                        g.globalCompositeOperation='source-over';};
-        const FLASH=['#d96a5e','#f8f8f4','#f8d838'];
-        const f=Math.floor(winFx.t/6);
-        // gold band gradient (olive top -> bright gold bottom)
-        const gold=g.createLinearGradient(0,0,0,ec.height);
-        gold.addColorStop(0,'#a89030'); gold.addColorStop(1,'#f0d848');
-        g.clearRect(0,0,ec.width,ec.height);
-        // three concentric star bands, fully transparent between them
-        g.fillStyle=FLASH[(f+2)%3]; star(1.34); g.fill();  // outermost band
-        punch(1.10);
-        g.fillStyle=gold; star(1.00); g.fill();            // huge gold band
-        punch(0.62);
-        g.fillStyle=FLASH[f%3]; star(0.37); g.fill();      // inner salmon star
-        punch(0.21);                                        // open center around the pair
-        // snap edge alpha so the upscale gives hard pixel steps
-        const id=g.getImageData(0,0,ec.width,ec.height);
-        for(let p=3;p<id.data.length;p+=4) id.data[p]=id.data[p]>127?255:0;
-        g.putImageData(id,0,0);
-        ctx.imageSmoothingEnabled=false;
-        ctx.drawImage(ec,0,0,ec.width,ec.height,0,0,ec.width*FS,ec.height*FS);
-      }
-      // the champion holds the ring overhead
-      const rx=player.x+player.n.x*54, ry=player.y+player.n.y*54;
-      ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
-    }
-    ctx.textAlign='center';
-    ctx.font='bold 52px monospace';
-    ctx.fillStyle='#1a0d04';
-    ctx.fillText('YOU CAUGHT THE RING!', WNAT/2+3, HNAT/2-7);
-    ctx.fillStyle='#f8e8b0';
-    ctx.fillText('YOU CAUGHT THE RING!', WNAT/2, HNAT/2-10);
-    ctx.font='24px monospace';
-    ctx.fillStyle='#1a0d04';
-    ctx.fillText('press R to play again', WNAT/2+2, HNAT/2+38);
-    ctx.fillStyle='#f8e8b0';
-    ctx.fillText('press R to play again', WNAT/2, HNAT/2+36);
-  }
-}
-loop();
-</script>
-</body>
-</html>
