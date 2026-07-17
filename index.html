@@ -26,6 +26,7 @@
        background:#18120d;border-top:3px solid #2c2118;box-sizing:border-box;
        padding-bottom:env(safe-area-inset-bottom);}
   body.touch #pad{display:block;}
+  body.touch #ui{display:none;}
   /* left: traditional d-pad (whole zone touchable, slide between arms) */
   #pad{--u:clamp(36px, 13vw, 56px);          /* d-pad arm size */
        --ab:clamp(54px, 17vw, 80px);}        /* action button size */
@@ -98,19 +99,19 @@ const T = 37;                        // tile size in native px
 const MAZE_V = [
 "11111111111",
 "1.........1",
-"1.11.1.11.1",
-"1....1....1",
-"1.11.1.11.1",
+"1.1111111.1",
+"1.1111111.1",
 "1.........1",
-"111.111.111",
+"1111.11.111",
 "1.........1",
-"1.1.111.1.1",
-"1.1.....1.1",
-"1.1.111.1.1",
+"1..11111..1",
+"1..11111..1",
 "1.........1",
-"11.11111.11",
+"111.11.1111",
 "1.........1",
-"1.11...11.1",
+"1.1111111.1",
+"1.1111111.1",
+"1.........1",
 "11111111111",
 ].map(r=>[...r].map(c=>c==='1'?1:0));
 
