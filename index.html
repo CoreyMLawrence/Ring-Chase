@@ -894,13 +894,61 @@ function drawWalker(w, sprA, sprB, trailState, vis){
 }
 
 let frame=0;
-function loop(){
+// ---------- fixed-timestep loop: simulation always runs at exactly 60 ticks/s,
+// rendering runs at the display's refresh rate (smooth at any Hz) ----------
+const STEP=1000/60;
+let accT=0, lastT=performance.now();
+function loop(now){
   requestAnimationFrame(loop);
+  if(now===undefined) now=performance.now();
+  let dt=now-lastT; lastT=now;
+  if(dt>250) dt=STEP;              // hidden tab / long hiccup: don't fast-forward
+  accT+=dt;
+  const pad=pollPad();
+  padEdges(pad);
+  let ticks=0;
+  while(accT>=STEP && ticks<5){ tick(pad); accT-=STEP; ticks++; }
+  if(ticks===5) accT=0;            // machine overloaded: drop the backlog
+  render();
+}
+function padEdges(pad){
+  if(!pad) return;
+  if(state==='title' && (pad.jump||pad.start||pad.gx||pad.gy)){ startGame(); return; }
+  if(pad.jump&&!padJumpPrev&&state==='play') player.jump(J);
+  if(pad.jump) player.jheld=true;
+  else if(padJumpPrev&&!keys.Space&&!keys.ArrowUp&&!keys.KeyW) player.jheld=false;
+  if(pad.start&&!padStartPrev){
+    if(state==='won') reset(); else togglePause();
+  }
+  padJumpPrev=pad.jump; padStartPrev=pad.start;
+}
+function tick(pad){
   frame++;
+  if(state==='title'){ titleUpdate(); return; }
+  if(state==='play'){
+    let ix=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
+    let iy=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
+    if(pad){ ix=ix||pad.gx; iy=iy||pad.gy; }
+    ix=ix||touchIn.x; iy=iy||touchIn.y;
+    player.drive(ix,iy,ACC,MAX,FRIC,SKID);
+    player.airControl(ix,iy);
+    player.step();
+    trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
+    if(trail.length>400) trail.shift();
+    if(frame%20===0) bfs();
+    ringStep();
+    // catch check
+    const centerX=player.x+player.n.x*20, centerY=player.y+player.n.y*20;
+    if(Math.hypot(centerX-ring.x, centerY-ring.y) < 30){
+      state='won';
+      winFx={x:ring.x, y:ring.y, t:0};
+      if(music&&!music.muted) jingle();
+    }
+  }
+  if(state==='won' && winFx) winFx.t++;
+}
+function render(){
   if(state==='title'){
-    const tp=pollPad();
-    if(tp && (tp.jump||tp.start||tp.gx||tp.gy)){ startGame(); return; }
-    titleUpdate();
     // --- render title ---
     ctx.fillStyle='#070402'; ctx.fillRect(0,0,WNAT,HNAT);
     ctx.drawImage(TDIRT,0,0);
@@ -926,38 +974,6 @@ function loop(){
     tv.addColorStop(0,'rgba(0,0,0,0)'); tv.addColorStop(1,'rgba(15,6,0,0.30)');
     ctx.fillStyle=tv; ctx.fillRect(0,0,WNAT,HNAT);
     return;
-  }
-  const pad=pollPad();
-  if(pad){
-    // jump on press edge; hold for variable height; Start pauses (or restarts after a win)
-    if(pad.jump&&!padJumpPrev&&state==='play') player.jump(J);
-    if(pad.jump) player.jheld=true;
-    else if(padJumpPrev&&!keys.Space&&!keys.ArrowUp&&!keys.KeyW) player.jheld=false;
-    if(pad.start&&!padStartPrev){
-      if(state==='won') reset(); else togglePause();
-    }
-    padJumpPrev=pad.jump; padStartPrev=pad.start;
-  }
-  if(state==='play'){
-    let ix=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
-    let iy=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
-    if(pad){ ix=ix||pad.gx; iy=iy||pad.gy; }
-    ix=ix||touchIn.x; iy=iy||touchIn.y;
-    player.drive(ix,iy,ACC,MAX,FRIC,SKID);
-    player.airControl(ix,iy);
-    player.step();
-    trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
-    if(trail.length>400) trail.shift();
-    if(frame%20===0) bfs();
-    ringStep();
-    // catch check
-    const pr = Math.hypot(player.x-(player.n.x*20)-ring.x+0, player.y-(player.n.y*20)-ring.y);
-    const centerX=player.x+player.n.x*20, centerY=player.y+player.n.y*20;
-    if(Math.hypot(centerX-ring.x, centerY-ring.y) < 30){
-      state='won';
-      winFx={x:ring.x, y:ring.y, t:0};
-      if(music&&!music.muted) jingle();
-    }
   }
 
   // render
@@ -1004,7 +1020,6 @@ function loop(){
     // win burst: bold full-screen 16-pointed star, concentric thick bands,
     // emanating from the catch point then flashing red / white / yellow
     if(winFx){
-      winFx.t++;
       const ease=p=>1-Math.pow(1-p,3);
       const grow=ease(Math.min(winFx.t/20,1));
       const R=Math.max(WNAT,HNAT)*0.82*grow;   // gold band reaches past screen edges
