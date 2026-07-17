@@ -16,22 +16,23 @@
             touch-action:none;-webkit-user-select:none;user-select:none;}
   body{display:flex;flex-direction:column;}
   #wrap{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:0;}
+  body.touch #wrap{padding-top:calc(env(safe-area-inset-top, 0px) + 10px);box-sizing:border-box;}
   canvas{image-rendering:pixelated;image-rendering:crisp-edges;}
   #ui{position:fixed;top:8px;left:50%;transform:translateX(-50%);color:#e8d8b0;
       font-family:monospace;font-size:13px;text-align:center;opacity:.85;pointer-events:none;
       text-shadow:1px 1px 0 #000;white-space:nowrap;max-width:96vw;overflow:hidden;}
   /* ---- touch controls: fixed-height bar at the bottom (portrait phones) ---- */
   #pad{display:none;position:relative;flex:0 0 auto;
-       height:clamp(190px, 30vh, 280px);
+       height:calc(clamp(215px, 34vh, 340px) + env(safe-area-inset-bottom, 0px));
        background:#18120d;border-top:3px solid #2c2118;box-sizing:border-box;
-       padding-bottom:env(safe-area-inset-bottom);}
+       padding-bottom:env(safe-area-inset-bottom, 0px);}
   body.touch #pad{display:block;}
   body.touch #ui{display:none;}
   /* left: traditional d-pad (whole zone touchable, slide between arms) */
-  #pad{--u:clamp(36px, 13vw, 56px);          /* d-pad arm size */
-       --ab:clamp(54px, 17vw, 80px);}        /* action button size */
-  #stickzone{position:absolute;left:0;top:0;width:52%;height:100%;}
-  #dpad{position:absolute;left:50%;top:47%;transform:translate(-50%,-50%);
+  #pad{--u:clamp(40px, 14.5vw, 64px);        /* d-pad arm size */
+       --ab:clamp(58px, 18.5vw, 92px);}      /* action button size */
+  #stickzone{position:absolute;left:0;top:0;width:52%;height:calc(100% - env(safe-area-inset-bottom, 0px));}
+  #dpad{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
         width:calc(var(--u)*3);height:calc(var(--u)*3);}
   .darm{position:absolute;width:var(--u);height:var(--u);background:#2e241a;
         display:flex;align-items:center;justify-content:center;color:#a08a68;
@@ -46,8 +47,8 @@
   #d-mid::after{content:'';position:absolute;left:33%;top:33%;width:34%;height:34%;
         border-radius:50%;background:#1c1610;}
   /* right: action buttons */
-  #btnzone{position:absolute;right:0;top:0;width:48%;height:100%;}
-  #btns{position:absolute;right:clamp(8px,4vw,26px);top:36%;
+  #btnzone{position:absolute;right:0;top:0;width:48%;height:calc(100% - env(safe-area-inset-bottom, 0px));}
+  #btns{position:absolute;right:clamp(8px,4vw,26px);top:42%;
         transform:translateY(-50%) rotate(-18deg);
         width:calc(var(--ab)*2.3);height:calc(var(--ab)*1.25);}
   .ab{position:absolute;width:var(--ab);height:var(--ab);border-radius:50%;
@@ -58,7 +59,7 @@
   .ab.on{transform:translateY(3px);box-shadow:0 1px 0 #4a1414, inset 0 -2px 6px rgba(0,0,0,.3);}
   #btnB{left:0;top:calc(var(--ab)*0.28);}
   #btnA{left:calc(var(--ab)*1.3);top:0;}
-  #pausebtn{position:absolute;right:clamp(8px,4vw,26px);bottom:12px;
+  #pausebtn{position:absolute;right:clamp(8px,4vw,26px);bottom:calc(env(safe-area-inset-bottom, 0px) + 14px);
         display:flex;align-items:center;gap:7px;
         padding:8px clamp(12px,4vw,22px);border-radius:14px;background:#241c14;color:#8a7758;
         font-family:monospace;font-size:12px;letter-spacing:2px;box-shadow:0 3px 0 #0a0705;}
@@ -161,7 +162,10 @@ cv.width = WNAT; cv.height = HNAT;
 const wrap = document.getElementById('wrap');
 let dirtTileURL=null;
 function fit(){
-  const s = Math.min(wrap.clientWidth/WNAT, wrap.clientHeight/HNAT);
+  const cs=getComputedStyle(wrap);
+  const availW=wrap.clientWidth -(parseFloat(cs.paddingLeft)||0)-(parseFloat(cs.paddingRight)||0);
+  const availH=wrap.clientHeight-(parseFloat(cs.paddingTop)||0)-(parseFloat(cs.paddingBottom)||0);
+  const s = Math.min(availW/WNAT, availH/HNAT);
   cv.style.width = (WNAT*s)+'px'; cv.style.height = (HNAT*s)+'px';
   // portrait: any space the map doesn't cover is filled with dirt
   if(document.body.classList.contains('touch')){
