@@ -889,9 +889,10 @@ function pollPads(){
       if(p.buttons[12]&&p.buttons[12].pressed) gy=-1;   // d-pad up
       if(p.buttons[13]&&p.buttons[13].pressed) gy=1;    // d-pad down
     }
-    const a=!!(p.buttons[0]&&p.buttons[0].pressed);   // A (advance/confirm)
-    const b=!!(p.buttons[1]&&p.buttons[1].pressed);   // B (back)
-    const jump=a||b;                                  // either jumps in-game
+    // A group = Cross + Circle ; B group = Square + Triangle
+    const a=!!((p.buttons[0]&&p.buttons[0].pressed)||(p.buttons[2]&&p.buttons[2].pressed)); // A advance/confirm
+    const b=!!((p.buttons[1]&&p.buttons[1].pressed)||(p.buttons[3]&&p.buttons[3].pressed)); // B back/cancel
+    const jump=a||b;                                  // any face button jumps in-game
     const start=!!(p.buttons[9]&&p.buttons[9].pressed);
     out.push({gx,gy,a,b,jump,start});
   }
