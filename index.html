@@ -910,25 +910,38 @@ let charSel=0, p1Char='red'; // chosen hero in 1P
 let modeSel=0, soloMode=false; // follow-the-leader vs solo (no trailing buddy)
 // ---- difficulty: EASY reproduces the original ring feel byte-for-byte ----
 const DIFFS=[
-  {name:'EASY',   spd:2.35, rnd:0.80, esc:0.0},  // wanders, slow, corners itself
-  {name:'NORMAL', spd:2.70, rnd:0.45, esc:0.5},  // purposeful flee, mild trap-dodge
-  {name:'HARD',   spd:3.00, rnd:0.20, esc:1.0},  // fast, near-optimal, dodges traps
-  {name:'EXPERT', spd:3.25, rnd:0.00, esc:1.5},  // near player speed, perfect greedy flee
+  {name:'EASY',   spd:2.35, rnd:0.80, esc:0.0},  // wanders, slow, corners itself (unchanged)
+  {name:'NORMAL', spd:2.95, rnd:0.28, esc:1.1},  // brisk, purposeful, dodges dead-ends
+  {name:'HARD',   spd:3.28, rnd:0.10, esc:1.9},  // near player speed, sharp, trap-averse
+  {name:'EXPERT', spd:3.55, rnd:0.00, esc:2.7},  // faster than the player: catch it only by cutting it off
 ];
 let diffSel=0;               // persisted 0..3
 function curDiff(){ return DIFFS[diffSel]; }
-let setSel=0;                // settings row: 0 MUSIC, 1 DIFFICULTY, 2 BACK
+let setSel=0;                // settings row: 0 MUSIC, 1 DIFFICULTY
 function musicOn(){ return soundPref()!=='off'; }
-function toggleMusicPref(){
-  const nowOn=musicOn();
-  setSoundPref(nowOn?'off':'on');
+// live-preview working copies while inside the settings screen
+let wSound=true, wDiff=0, snapSound=true;
+function applyMusic(on){
   if(!actx) initAudio();
-  if(music){ music.muted=nowOn; music.master.gain.value=nowOn?0:0.9;
-             if(!nowOn && actx.state==='suspended') actx.resume().catch(()=>{}); }
+  if(music){ music.muted=!on; music.master.gain.value=on?0.9:0;
+             if(on && actx.state==='suspended') actx.resume().catch(()=>{}); }
 }
-function cycleDiff(dir){
-  diffSel=(diffSel+dir+DIFFS.length)%DIFFS.length;
-  try{ localStorage.setItem('rc_diff', diffSel); }catch(e){}
+function enterSettings(){
+  titlePhase='settings'; setSel=0;
+  wSound=musicOn(); snapSound=wSound; wDiff=diffSel;
+}
+function settingsChange(dx){      // left/right on a row
+  if(setSel===0){ wSound=!wSound; applyMusic(wSound); }         // MUSIC live-toggles
+  else { wDiff=(wDiff+(dx>0?1:-1)+DIFFS.length)%DIFFS.length; } // DIFFICULTY preview
+}
+function settingsConfirm(){       // A: save + back to menu
+  setSoundPref(wSound?'on':'off');
+  diffSel=wDiff; try{ localStorage.setItem('rc_diff', diffSel); }catch(e){}
+  titlePhase='menu';
+}
+function settingsCancel(){        // B: revert changes + back to menu
+  applyMusic(snapSound);          // restore live music state
+  titlePhase='menu';              // diffSel/soundPref never committed
 }
 let blueW=null;              // blue as a real player in 2P
 function kbTarget(){ return (players===2 && blueW) ? blueW : player; }
@@ -1011,7 +1024,7 @@ const F35={ // 3x5 prompt font
  H:['X.X','X.X','XXX','X.X','X.X'], W:['X.X','X.X','X.X','XXX','X.X'],
  F:['XXX','X..','XX.','X..','X..'], D:['XX.','X.X','X.X','X.X','XX.'],
  I:['XXX','.X.','.X.','.X.','XXX'],
- G:['.XX','X..','X.X','X.X','.XX'], X:['X.X','X.X','.X.','X.X','X.X'],
+ G:['.XX','X..','X.X','X.X','.XX'], X:['X.X','X.X','.X.','X.X','X.X'], V:['X.X','X.X','X.X','X.X','.X.'],
  '>':['X..','.X.','..X','.X.','X..'], '<':['..X','.X.','X..','.X.','..X'],
 };
 function pixText(g,txt,cx,y,px,font,cw,rows,colTop,colBot,shadow){
@@ -1058,16 +1071,14 @@ function titleAdvance(){          // A / Start / Space / Enter
     const label=it[Math.min(menuSel,it.length-1)];
     if(label==='1 PLAYER'){ titlePhase='mode'; modeSel=soloMode?1:0; }
     else if(label==='2 PLAYERS'){ beginPlay(2); }
-    else if(label==='SETTINGS'){ titlePhase='settings'; setSel=0; }
-  } else if(titlePhase==='settings'){
-    if(setSel===0) toggleMusicPref();
-    else if(setSel===1) cycleDiff(1);
-    else titlePhase='menu';       // BACK row
-  } else if(titlePhase==='mode'){ confirmMode(); }
+    else if(label==='SETTINGS'){ enterSettings(); }
+  } else if(titlePhase==='settings'){ settingsConfirm(); }
+  else if(titlePhase==='mode'){ confirmMode(); }
   else if(titlePhase==='char'){ confirmChar(); }
 }
 function titleBack(){            // B / Escape
-  if(titlePhase==='settings'||titlePhase==='mode') titlePhase='menu';
+  if(titlePhase==='settings') settingsCancel();
+  else if(titlePhase==='mode') titlePhase='menu';
   else if(titlePhase==='char') titlePhase='mode';
   // menu root: nothing above
 }
@@ -1076,8 +1087,8 @@ function titleNav(dx,dy){       // d-pad / arrows
     const n=menuItems().length;
     if(dy) menuSel=(menuSel+(dy>0?1:n-1))%n;
   } else if(titlePhase==='settings'){
-    if(dy) setSel=(setSel+(dy>0?1:2))%3;
-    else if(dx){ if(setSel===0) toggleMusicPref(); else if(setSel===1) cycleDiff(dx>0?1:-1); }
+    if(dy) setSel=(setSel+1)%2;
+    else if(dx) settingsChange(dx);
   } else if(titlePhase==='mode'){
     if(dy) modeSel=(modeSel+1)%2;
   } else if(titlePhase==='char'){
@@ -1354,13 +1365,12 @@ function render(){
         }
       }
     } else if(titlePhase==='settings'){
-      // -------- settings panel --------
+      // -------- settings panel (left/right changes, A saves, B cancels) --------
       const px=LAY.promptPx;
-      const rows=['MUSIC   '+(musicOn()?'ON':'OFF'),
-                  'DIFFICULTY   '+curDiff().name,
-                  'BACK'];
-      for(let i=0;i<3;i++){
-        const y=ISL.y1+1.3*T + i*(5*px+14);
+      const rows=['MUSIC   '+(wSound?'ON':'OFF'),
+                  'DIFFICULTY   '+DIFFS[wDiff].name];
+      for(let i=0;i<2;i++){
+        const y=ISL.y1+1.5*T + i*(5*px+16);
         const sel=i===setSel;
         pixText(ctx,(sel?'> ':'  ')+rows[i]+(sel?' <':'  '), WNAT/2, y, px, F35,3,5,
                 sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
@@ -1380,7 +1390,8 @@ function render(){
     // footer hint on sub-screens
     if(titlePhase!=='menu'){
       const px=Math.max(3,LAY.promptPx-1);
-      pixText(ctx,'A SELECT   B BACK', WNAT/2, HNAT-6*px, px, F35,3,5, '#8a7758','#5e5040', true);
+      const hint = titlePhase==='settings' ? 'CHANGE   A SAVE   B CANCEL' : 'A SELECT   B BACK';
+      pixText(ctx,hint, WNAT/2, HNAT-6*px, px, F35,3,5, '#8a7758','#5e5040', true);
     }
     // cozy vignette
     const tv=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
