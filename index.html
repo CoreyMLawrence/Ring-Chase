@@ -538,6 +538,10 @@ addEventListener('keydown',e=>{
       }
       startGame(); return;
     }
+    if(titlePhase==='mode'){
+      if(['ArrowUp','KeyW','ArrowDown','KeyS'].includes(e.code)){ modeSel=(modeSel+1)%2; return; }
+      confirmMode(); return;
+    }
     // character select
     if(['ArrowLeft','KeyA','ArrowRight','KeyD'].includes(e.code)){ charSel=(charSel+1)%2; return; }
     confirmChar(); return;
@@ -762,7 +766,9 @@ const touchIn={x:0,y:0};
   zone.addEventListener('touchstart',e=>{
     e.preventDefault();
     if(state==='title'){
-      if(titlePhase==='menu') startGame(); else charSel=(charSel+1)%2;
+      if(titlePhase==='menu') startGame();
+      else if(titlePhase==='mode') modeSel=(modeSel+1)%2;
+      else charSel=(charSel+1)%2;
       return;
     }
     if(state==='paused'){ pauseSel=(pauseSel+1)%2; return; }
@@ -787,7 +793,9 @@ const touchIn={x:0,y:0};
     btn.addEventListener('touchstart',e=>{
       e.preventDefault(); btn.classList.add('on');
       if(state==='title'){
-        if(titlePhase==='menu') startGame(); else confirmChar();
+        if(titlePhase==='menu') startGame();
+        else if(titlePhase==='mode') confirmMode();
+        else confirmChar();
         return;
       }
       if(state==='paused'){ pauseConfirm(); return; }
@@ -805,7 +813,9 @@ const touchIn={x:0,y:0};
   pb.addEventListener('touchstart',e=>{
     e.preventDefault(); pb.classList.add('on');
     if(state==='title'){
-      if(titlePhase==='menu') startGame(); else confirmChar();
+      if(titlePhase==='menu') startGame();
+      else if(titlePhase==='mode') confirmMode();
+      else confirmChar();
       return;
     }
     togglePause();
@@ -908,8 +918,9 @@ let players=1, menuSel=0;    // title menu: 1P / 2P
 // 2P needs one controller on desktop (keyboard is P2);
 // on touch devices there is no keyboard, so it needs two controllers
 function twoPAvailable(){ return isTouchDevice ? lastPadCount>=2 : lastPadCount>=1; }
-let titlePhase='menu';       // 'menu' -> (1P) 'char' select -> play
+let titlePhase='menu';       // 'menu' -> (1P) 'mode' -> 'char' -> play
 let charSel=0, p1Char='red'; // chosen hero in 1P
+let modeSel=0, soloMode=false; // follow-the-leader vs solo (no trailing buddy)
 let blueW=null;              // blue as a real player in 2P
 function kbTarget(){ return (players===2 && blueW) ? blueW : player; }
 
@@ -988,6 +999,7 @@ const F35={ // 3x5 prompt font
  '1':['.X.','XX.','.X.','.X.','XXX'], '2':['XX.','..X','.X.','X..','XXX'],
  L:['X..','X..','X..','X..','XXX'], M:['X.X','XXX','X.X','X.X','X.X'],
  C:['.XX','X..','X..','X..','.XX'], K:['X.X','X.X','XX.','X.X','X.X'],
+ H:['X.X','X.X','XXX','X.X','X.X'], W:['X.X','X.X','X.X','XXX','X.X'],
  F:['XXX','X..','XX.','X..','X..'], D:['XX.','X.X','X.X','X.X','XX.'],
  I:['XXX','.X.','.X.','.X.','XXX'],
  '>':['X..','.X.','..X','.X.','X..'], '<':['..X','.X.','X..','.X.','..X'],
@@ -1017,7 +1029,11 @@ function beginPlay(n){
 }
 function startGame(){
   if(menuSel===1 && twoPAvailable()){ beginPlay(2); return; }
-  titlePhase='char'; charSel = p1Char==='red'?0:1;   // 1P: pick your hero first
+  titlePhase='mode'; modeSel = soloMode?1:0;   // 1P: pick a mode first
+}
+function confirmMode(){
+  soloMode = modeSel===1;
+  titlePhase='char'; charSel = p1Char==='red'?0:1;
 }
 function confirmChar(){
   p1Char = charSel===0 ? 'red' : 'blue';
@@ -1155,6 +1171,9 @@ function padEdges(pads){
         // menu: up/down selects player count, any action button proceeds
         if(pad.gy!==0 && prev.gy===0 && twoPAvailable()) menuSel=(menuSel+1)%2;
         if((pad.jump&&!prev.jump)||(pad.start&&!prev.start)) startGame();
+      } else if(titlePhase==='mode'){
+        if(pad.gy!==0 && (prev.gy||0)===0) modeSel=(modeSel+1)%2;
+        if((pad.jump&&!prev.jump)||(pad.start&&!prev.start)) confirmMode();
       } else {
         // character select: left/right picks, action confirms
         if(pad.gx!==0 && (prev.gx||0)===0) charSel=(charSel+1)%2;
@@ -1250,7 +1269,17 @@ function render(){
     const logoY = ISL.y0 + (ISLH - logoH)/2;           // centred on the block
     pixText(ctx,'RING', WNAT/2, logoY, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
     pixText(ctx,'CHASE',WNAT/2, logoY+7*LAY.logoPx+10, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
-    if(titlePhase==='char'){
+    if(titlePhase==='mode'){
+      // -------- game-mode selector --------
+      const px=LAY.promptPx;
+      const opts=['FOLLOW THE LEADER','SOLO'];
+      for(let i=0;i<2;i++){
+        const y=ISL.y1+1.5*T + i*(5*px+14);
+        const sel=i===modeSel;
+        pixText(ctx,(sel?'> ':'  ')+opts[i]+(sel?' <':'  '), WNAT/2, y, px, F35,3,5,
+                sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
+      }
+    } else if(titlePhase==='char'){
       // -------- simple hero selector --------
       const px=LAY.promptPx;
       pixText(ctx,'PLAYER 1', WNAT/2, ISL.y1+1.1*T, px, F35,3,5, '#f8f0dc','#c8b890', true);
@@ -1315,11 +1344,13 @@ function render(){
   const P2S = heroRed ? {a:SPR.blueA,b:SPR.blueB,vis:blueVis} : {a:SPR.redA,b:SPR.redB,vis:redVis};
   if(players===2 && blueW){
     drawWalker(blueW, P2S.a, P2S.b, null, P2S.vis);
-  } else {
+  } else if(!soloMode){
+    // follow-the-leader: the other character trails behind
     const bs = trailFollow();
     if(bs) drawWalker(null, P2S.a, P2S.b, bs, P2S.vis);
     else drawWalker(null, P2S.a, P2S.b, {x:LAY.blueIdle.x*T,y:LAY.blueIdle.y*T,n:{x:0,y:-1},face:1,animT:0}, P2S.vis);
   }
+  // solo: no trailing buddy drawn at all
   drawWalker(player, P1S.a, P1S.b, null, P1S.vis);
 
   // gentle warm vignette (warmth lives in the dirt palette; corridors stay deep dark)
