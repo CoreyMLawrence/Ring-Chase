@@ -282,6 +282,7 @@ class Walker{
     this.face=1;                      // facing along +tangent?
     this.air=false; this.ax=0; this.ay=0; // airborne velocity
     this.animT=0;
+    this.prevN=null; this.turnT=99;   // corner-turn hysteresis
   }
   get t(){ return tangent(this.n); }
   // input: desired screen direction (-1,0,1 per axis)
@@ -376,6 +377,7 @@ class Walker{
       }
       return;
     }
+    this.turnT++;
     if(this.v===0){ this.animT=0; return; }
     let remain = Math.abs(this.v);
     const dir = Math.sign(this.v);
@@ -399,8 +401,13 @@ class Walker{
         const stopAt = wallPlane - (dx+dy>0?1:-1)*6;
         if(dx!==0) this.x = stopAt; else this.y = stopAt;
         // inner turn: new normal = -travel, new travel dir = old normal
+        const wouldN = {x:-dx, y:-dy};
+        if(this.turnT<10 && this.prevN && wouldN.x===this.prevN.x && wouldN.y===this.prevN.y){
+          this.v=0; break;                       // would undo the last turn: park at the corner
+        }
         const on = {...this.n};
-        this.n = {x:-dx, y:-dy};
+        this.prevN = on; this.turnT = 0;
+        this.n = wouldN;
         const nt = this.t;
         const newDir = Math.sign(on.x*nt.x + on.y*nt.y);
         this.v = Math.abs(this.v)*newDir*0.85;   // ease into the turn
@@ -412,19 +419,23 @@ class Walker{
       const underX = nx - this.n.x*4, underY = ny - this.n.y*4;
       if(!solidAt(underX,underY)){
         // outer corner: wrap around
-        // snap to the exact corner first
-        const boundary = dx+dy>0 ? Math.round((dx!==0?nx:ny)/T)*T
-                                 : Math.round((dx!==0?nx:ny)/T)*T;
+        const boundary = Math.round((dx!==0?nx:ny)/T)*T;
+        const wouldN = {x:dx, y:dy};
+        if(this.turnT<10 && this.prevN && wouldN.x===this.prevN.x && wouldN.y===this.prevN.y){
+          // would undo the last turn: park just inside the corner instead
+          if(dx!==0) this.x = boundary - dx; else this.y = boundary - dy;
+          this.v=0; break;
+        }
         if(dx!==0) this.x = boundary; else this.y = boundary;
         const on={...this.n};
-        this.n = {x:dx, y:dy};                 // new normal = old travel dir
+        this.prevN = on; this.turnT = 0;
+        this.n = wouldN;                       // new normal = old travel dir
         const nt=this.t;
         const newDir = Math.sign((-on.x)*nt.x + (-on.y)*nt.y);
         this.v = Math.abs(this.v)*newDir*0.85; // ease around the corner
         this.face = newDir;
         // nudge around the corner
         this.x += nt.x*newDir*4 ; this.y += nt.y*newDir*4;
-        this.x -= this.n.x*0; this.y -= this.n.y*0;
         remain -= stepd;
         continue;
       }
@@ -477,11 +488,11 @@ function trailFollow(){
 const ring = {x:(LAY.ringCell.i+0.5)*T, y:(LAY.ringCell.j+0.5)*T,
               tx:LAY.ringCell.i, ty:LAY.ringCell.j, speed:2.35, prev:null, bob:0};
 
-// BFS distances from player's cell (recomputed periodically)
-let dist=null;
-function bfs(){
-  const pi=Math.max(0,Math.min(NI-1,Math.floor(player.x/T)));
-  const pj=Math.max(0,Math.min(NJ-1,Math.floor(player.y/T)));
+// BFS distances from each player's cell (recomputed periodically)
+let distR=null, distB=null;
+function bfsFrom(w){
+  const pi=Math.max(0,Math.min(NI-1,Math.floor(w.x/T)));
+  const pj=Math.max(0,Math.min(NJ-1,Math.floor(w.y/T)));
   const d=Array.from({length:NJ},()=>Array(NI).fill(-1));
   const q=[[pi,pj]]; d[pj][pi]=0;
   while(q.length){
@@ -493,32 +504,55 @@ function bfs(){
       d[nj2][ni2]=d[j][i]+1; q.push([ni2,nj2]);
     }
   }
-  dist=d;
+  return d;
 }
-bfs();
+function bfs(){ distR=bfsFrom(player); distB=blueW?bfsFrom(blueW):null; }
 
 // ---------- input ----------
 const keys={};
+let pauseSel=0;
 function togglePause(){
-  if(state==='play') state='paused';
+  if(state==='play'){ state='paused'; pauseSel=0; }
   else if(state==='paused') state='play';
+}
+function pauseConfirm(){
+  if(pauseSel===0) state='play';
+  else enterTitle(preferredLayout());     // back to the main menu
 }
 addEventListener('keydown',e=>{
   keys[e.code]=true;
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if(e.repeat) return;
-  if(state==='title' && !['KeyM','KeyH'].includes(e.code)){ startGame(); return; }
-  if(state==='play'){
-    if(e.code==='Space') player.jump(J);
-    // Up/W also jump, but only when standing on a floor (on walls they mean "run up")
-    if((e.code==='ArrowUp'||e.code==='KeyW') && player.n.y===-1 && !player.air) player.jump(J);
+  if(state==='title'){
+    if(['KeyM','KeyH'].includes(e.code)) return;
+    if(titlePhase==='menu'){
+      if(twoPAvailable() && ['ArrowUp','KeyW','ArrowDown','KeyS'].includes(e.code)){
+        menuSel=(menuSel+1)%2;           // toggle 1P / 2P
+        return;
+      }
+      startGame(); return;
+    }
+    // character select
+    if(['ArrowLeft','KeyA','ArrowRight','KeyD'].includes(e.code)){ charSel=(charSel+1)%2; return; }
+    confirmChar(); return;
   }
-  if(e.code==='KeyP'||e.code==='Escape') togglePause();
-  if(e.code==='KeyR' && state==='won') reset();
+  if(state==='play'){
+    const t=kbTarget();
+    if(e.code==='Space') t.jump(J);
+    // Up/W also jump, but only when standing on a floor (on walls they mean "run up")
+    if((e.code==='ArrowUp'||e.code==='KeyW') && t.n.y===-1 && !t.air) t.jump(J);
+    if(e.code==='KeyP'||e.code==='Escape') togglePause();
+  } else if(state==='paused'){
+    if(['ArrowUp','KeyW','ArrowDown','KeyS'].includes(e.code)) pauseSel=(pauseSel+1)%2;
+    else if(['Space','Enter'].includes(e.code)) pauseConfirm();
+    else if(e.code==='KeyP'||e.code==='Escape') state='play';
+  } else if(state==='won'){
+    if(['Space','Enter','KeyR'].includes(e.code)) reset();
+  }
 });
 addEventListener('keyup',e=>{
   keys[e.code]=false;
-  if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW') player.jheld=false;
+  if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW') kbTarget().jheld=false;
 });
 
 // ---------- gamepad (native browser Gamepad API) ----------
@@ -659,7 +693,7 @@ function playNote(ch,when,dur,note){
   o.start(when); o.stop(end+0.02);
 }
 function schedule(){
-  if(!music||music.muted||state!=='play') return;
+  if(!music||music.muted||(state!=='play'&&state!=='title')) return;
   const ahead=actx.currentTime+0.18;
   for(let c=0;c<3;c++){
     const ch=music.chans[c], ev=ch.ev;
@@ -681,8 +715,12 @@ function jingle(){
   for(const [n,st,d] of seq) playNote(music.chans[0],t0+st*EIGHTH,d,n);
   playNote(music.chans[2],t0,7,'Bb3');
 }
+function soundPref(){ try{ return localStorage.getItem('rc_sound'); }catch(e){ return null; } }
+function setSoundPref(v){ try{ localStorage.setItem('rc_sound', v); }catch(e){} }
 function startMusicOnGesture(){
   initAudio();
+  if(soundPref()==='off') music.muted=true, music.master.gain.value=0;
+  else setSoundPref('on');                    // pressing a button is the consent
   if(actx.state==='suspended') actx.resume();
 }
 addEventListener('keydown',startMusicOnGesture,{once:false});
@@ -690,7 +728,8 @@ addEventListener('touchstart',startMusicOnGesture,{once:false});
 addEventListener('mousedown',startMusicOnGesture,{once:false});
 addEventListener('keydown',e=>{
   if(e.code==='KeyM'&&music){ music.muted=!music.muted;
-    music.master.gain.value=music.muted?0:0.9; }
+    music.master.gain.value=music.muted?0:0.9;
+    setSoundPref(music.muted?'off':'on'); }
 });
 
 // ---------- touch controls: floating thumb-stick + action buttons ----------
@@ -716,7 +755,11 @@ const touchIn={x:0,y:0};
   }
   zone.addEventListener('touchstart',e=>{
     e.preventDefault();
-    if(state==='title'){ startGame(); return; }
+    if(state==='title'){
+      if(titlePhase==='menu') startGame(); else charSel=(charSel+1)%2;
+      return;
+    }
+    if(state==='paused'){ pauseSel=(pauseSel+1)%2; return; }
     if(dirTouch===null){
       const t=e.changedTouches[0];
       dirTouch=t.identifier;
@@ -737,7 +780,11 @@ const touchIn={x:0,y:0};
   function bindJump(btn){
     btn.addEventListener('touchstart',e=>{
       e.preventDefault(); btn.classList.add('on');
-      if(state==='title'){ startGame(); return; }
+      if(state==='title'){
+        if(titlePhase==='menu') startGame(); else confirmChar();
+        return;
+      }
+      if(state==='paused'){ pauseConfirm(); return; }
       if(state==='won') reset();
       else if(state==='play'){ player.jump(J); player.jheld=true; }
     },{passive:false});
@@ -751,7 +798,10 @@ const touchIn={x:0,y:0};
   const pb=el('pausebtn');
   pb.addEventListener('touchstart',e=>{
     e.preventDefault(); pb.classList.add('on');
-    if(state==='title'){ startGame(); return; }
+    if(state==='title'){
+      if(titlePhase==='menu') startGame(); else confirmChar();
+      return;
+    }
     togglePause();
   },{passive:false});
   for(const ev of ['touchend','touchcancel']) pb.addEventListener(ev,e=>{
@@ -820,16 +870,17 @@ function hidApply(d){
 }
 addEventListener('keydown',e=>{ if(e.code==='KeyH') hidConnect(); });
 
-let padJumpPrev=false, padStartPrev=false;
-function pollPad(){
+let padPrev=[];              // per-pad previous button state (edges)
+function pollPads(){
+  const out=[];
   const pads=navigator.getGamepads?navigator.getGamepads():[];
   for(const p of pads){
     if(!p||!p.connected) continue;
     const dz=0.3, ax=p.axes[0]||0, ay=p.axes[1]||0;
     let gx=Math.abs(ax)>dz?Math.sign(ax):0;
     let gy=Math.abs(ay)>dz?Math.sign(ay):0;
-    if(hid.map){
-      // calibrated raw-HID d-pad overrides (the API's 12-15 are unreliable on these pads)
+    if(out.length===0 && hid.map){
+      // calibrated raw-HID d-pad override for the linked retro pad (first pad)
       gx=hid.x; gy=hid.y;
     } else {
       if(p.buttons[14]&&p.buttons[14].pressed) gx=-1;   // d-pad left
@@ -839,13 +890,22 @@ function pollPad(){
     }
     const jump=(p.buttons[0]&&p.buttons[0].pressed)||(p.buttons[1]&&p.buttons[1].pressed); // A / B
     const start=p.buttons[9]&&p.buttons[9].pressed;   // Start
-    return {gx,gy,jump,start};
+    out.push({gx,gy,jump,start});
   }
-  return null;
+  return out;
 }
+let lastPadCount=0;
 
 let state='title';
 let winFx=null;
+let players=1, menuSel=0;    // title menu: 1P / 2P
+// 2P needs one controller on desktop (keyboard is P2);
+// on touch devices there is no keyboard, so it needs two controllers
+function twoPAvailable(){ return isTouchDevice ? lastPadCount>=2 : lastPadCount>=1; }
+let titlePhase='menu';       // 'menu' -> (1P) 'char' select -> play
+let charSel=0, p1Char='red'; // chosen hero in 1P
+let blueW=null;              // blue as a real player in 2P
+function kbTarget(){ return (players===2 && blueW) ? blueW : player; }
 
 // ---------- title screen ----------
 // AI red chases the ring around the logo island forever; blue tags along.
@@ -866,7 +926,9 @@ function enterTitle(lay){
   tRed.face=tSt.redDir;  tRed.v=2.5*tSt.redDir;
   tRing.face=tSt.ringDir; tRing.v=2.9*tSt.ringDir;
   trail.length=0;
+  titlePhase='menu';
   state='title';
+  if(music&&actx){ music.ptr=[0,0,0]; music.loopStart=actx.currentTime+0.15; }
 }
 function perimS(w){
   if(w.n.y===-1) return w.x-ISL.x0;                       // top
@@ -917,6 +979,12 @@ const F35={ // 3x5 prompt font
  Y:['X.X','X.X','.X.','.X.','.X.'], B:['XX.','X.X','XX.','X.X','XX.'],
  U:['X.X','X.X','X.X','X.X','XXX'], T:['XXX','.X.','.X.','.X.','.X.'],
  O:['XXX','X.X','X.X','X.X','XXX'], ' ':['...','...','...','...','...'],
+ '1':['.X.','XX.','.X.','.X.','XXX'], '2':['XX.','..X','.X.','X..','XXX'],
+ L:['X..','X..','X..','X..','XXX'], M:['X.X','XXX','X.X','X.X','X.X'],
+ C:['.XX','X..','X..','X..','.XX'], K:['X.X','X.X','XX.','X.X','X.X'],
+ F:['XXX','X..','XX.','X..','X..'], D:['XX.','X.X','X.X','X.X','XX.'],
+ I:['XXX','.X.','.X.','.X.','XXX'],
+ '>':['X..','.X.','..X','.X.','X..'], '<':['..X','.X.','X..','.X.','..X'],
 };
 function pixText(g,txt,cx,y,px,font,cw,rows,colTop,colBot,shadow){
   const w=txt.length*(cw+1)-1;
@@ -934,13 +1002,29 @@ function pixText(g,txt,cx,y,px,font,cw,rows,colTop,colBot,shadow){
   }
 }
 
-function startGame(){
+function beginPlay(n){
+  players=n;
   setWorld(LAY.maze);
   trail.length=0;
   reset();
   state='play';
 }
-addEventListener('mousedown',()=>{ if(state==='title') startGame(); });
+function startGame(){
+  if(menuSel===1 && twoPAvailable()){ beginPlay(2); return; }
+  titlePhase='char'; charSel = p1Char==='red'?0:1;   // 1P: pick your hero first
+}
+function confirmChar(){
+  p1Char = charSel===0 ? 'red' : 'blue';
+  beginPlay(1);
+}
+addEventListener('mousedown',e=>{
+  if(state!=='title') return;
+  if(titlePhase==='menu'){ startGame(); return; }
+  // char select: click a side to choose it, click the chosen one to start
+  const r=cv.getBoundingClientRect();
+  const side = (e.clientX - r.left) < r.width/2 ? 0 : 1;
+  if(side===charSel) confirmChar(); else charSel=side;
+});
 
 // ---------- orientation & layout ----------
 // portrait touch phone -> tall map + on-screen controls
@@ -962,6 +1046,9 @@ function reset(){
   winFx=null;
   if(music){ music.ptr=[0,0,0]; music.loopStart=actx.currentTime+0.15; }
   player.x=LAY.spawn.x*T; player.y=LAY.spawn.y*T; player.n={x:0,y:-1}; player.v=0; player.air=false;
+  if(players===2){
+    blueW=new Walker(LAY.blueIdle.x*T, LAY.blueIdle.y*T);
+  } else blueW=null;
   ring.x=(LAY.ringCell.i+0.5)*T; ring.y=(LAY.ringCell.j+0.5)*T;
   ring.tx=LAY.ringCell.i; ring.ty=LAY.ringCell.j; ring.prev=null;
   trail.length=0;
@@ -982,7 +1069,9 @@ function ringStep(){
     for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
       const ni2=ring.tx+di, nj2=ring.ty+dj;
       if(ni2<0||nj2<0||ni2>=NI||nj2>=NJ||LAY.maze[nj2][ni2]===1) continue;
-      let score=(dist&&dist[nj2][ni2]>=0)?dist[nj2][ni2]:0;
+      const dR=(distR&&distR[nj2][ni2]>=0)?distR[nj2][ni2]:0;
+      const dB=(distB&&distB[nj2][ni2]>=0)?distB[nj2][ni2]:dR;
+      let score=Math.min(dR,dB);          // flee whichever player is closer
       if(ring.prev && ni2===ring.prev[0] && nj2===ring.prev[1]) score-=2.5;
       score+=Math.random()*0.8;
       opts.push([ni2,nj2,score]);
@@ -1006,14 +1095,26 @@ function angLerp(a,b,f){
   while(d<-Math.PI)d+=2*Math.PI;
   return a+d*f;
 }
-const redVis={ang:0}, blueVis={ang:0};
+const redVis={to:null,from:0,t:99}, blueVis={to:null,from:0,t:99};
 function drawWalker(w, sprA, sprB, trailState, vis){
   const s = trailState || w;
   const spr = (!trailState && w.air) ? sprA
             : (s.animT!==undefined && Math.floor(s.animT/14)%2===0) ? sprA : sprB;
   const target = Math.atan2(s.n.x, -s.n.y);  // 0 when n=(0,-1)
   let ang = target;
-  if(vis){ vis.ang = angLerp(vis.ang, target, 0.35); ang = vis.ang; }
+  if(vis){
+    if(vis.to===null){ vis.to=target; vis.from=target; vis.t=99; }
+    let d=target-vis.to;
+    while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI;
+    if(Math.abs(d)>0.01){ vis.from=vis.to; vis.to=target; vis.t=0; }
+    vis.t++;
+    if(vis.t<5){
+      // mid-turn: hold the 45-degree halfway pose
+      let h=vis.to-vis.from;
+      while(h>Math.PI)h-=2*Math.PI; while(h<-Math.PI)h+=2*Math.PI;
+      ang = vis.from + h/2;
+    } else ang = vis.to;
+  }
   ctx.save();
   ctx.translate(Math.round(s.x), Math.round(s.y));
   ctx.rotate(ang);
@@ -1034,48 +1135,100 @@ function loop(now){
   let dt=now-lastT; lastT=now;
   if(dt>250) dt=STEP;              // hidden tab / long hiccup: don't fast-forward
   accT+=dt;
-  const pad=pollPad();
-  padEdges(pad);
+  const pads=pollPads();
+  lastPadCount=pads.length;
+  padEdges(pads);
   let ticks=0;
-  while(accT>=STEP && ticks<5){ tick(pad); accT-=STEP; ticks++; }
+  while(accT>=STEP && ticks<5){ tick(pads); accT-=STEP; ticks++; }
   if(ticks===5) accT=0;            // machine overloaded: drop the backlog
   render();
 }
-function padEdges(pad){
-  if(!pad) return;
-  if(state==='title' && (pad.jump||pad.start||pad.gx||pad.gy)){ startGame(); return; }
-  if(pad.jump&&!padJumpPrev&&state==='play') player.jump(J);
-  if(pad.jump) player.jheld=true;
-  else if(padJumpPrev&&!keys.Space&&!keys.ArrowUp&&!keys.KeyW) player.jheld=false;
-  if(pad.start&&!padStartPrev){
-    if(state==='won') reset(); else togglePause();
+function padEdges(pads){
+  for(let i=0;i<pads.length;i++){
+    const pad=pads[i];
+    if((pad.jump||pad.start||pad.gx||pad.gy) && soundPref()!=='off'){
+      if(!actx) initAudio();
+      if(actx.state==='suspended') actx.resume().catch(()=>{});
+    }
+    const prev=padPrev[i]||{jump:false,start:false,gy:0};
+    if(state==='title'){
+      if(titlePhase==='menu'){
+        // menu: up/down selects player count, any action button proceeds
+        if(pad.gy!==0 && prev.gy===0 && twoPAvailable()) menuSel=(menuSel+1)%2;
+        if((pad.jump&&!prev.jump)||(pad.start&&!prev.start)) startGame();
+      } else {
+        // character select: left/right picks, action confirms
+        if(pad.gx!==0 && (prev.gx||0)===0) charSel=(charSel+1)%2;
+        if((pad.jump&&!prev.jump)||(pad.start&&!prev.start)) confirmChar();
+      }
+      padPrev[i]={jump:pad.jump,start:pad.start,gy:pad.gy,gx:pad.gx};
+      continue;
+    }
+    // pad 0 drives red; pad 1 drives blue in 2P
+    const target = (i===0) ? player : (players===2 && blueW && i===1 ? blueW : null);
+    if(pad.jump&&!prev.jump){
+      if(state==='play' && target) target.jump(J);
+      else if(state==='won') reset();
+      else if(state==='paused') pauseConfirm();
+    }
+    if(target){
+      if(pad.jump) target.jheld=true;
+      else if(prev.jump) target.jheld=false;
+    }
+    if(pad.start&&!prev.start){
+      if(state==='won') reset();
+      else if(state==='paused') pauseConfirm();
+      else if(state==='play') togglePause();
+    }
+    if(state==='paused' && pad.gy!==0 && prev.gy===0) pauseSel=(pauseSel+1)%2;
+    padPrev[i]={jump:pad.jump,start:pad.start,gy:pad.gy};
   }
-  padJumpPrev=pad.jump; padStartPrev=pad.start;
+  padPrev.length=pads.length;
 }
-function tick(pad){
+function tick(pads){
   frame++;
+  if(frame%90===0 && actx && actx.state==='suspended' && soundPref()!=='off')
+    actx.resume().catch(()=>{});
   if(state==='title'){ titleUpdate(); return; }
   if(state==='play'){
-    let ix=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
-    let iy=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
-    if(pad){ ix=ix||pad.gx; iy=iy||pad.gy; }
-    ix=ix||touchIn.x; iy=iy||touchIn.y;
-    player.drive(ix,iy,ACC,MAX,FRIC,SKID);
-    player.airControl(ix,iy);
+    const kx=(keys.ArrowLeft||keys.KeyA?-1:0)+(keys.ArrowRight||keys.KeyD?1:0);
+    const ky=(keys.ArrowUp||keys.KeyW?-1:0)+(keys.ArrowDown||keys.KeyS?1:0);
+    const p0=pads[0], p1=pads[1];
+    // red: pad 0; in 1P the keyboard and touch drive red too
+    let rx=p0?p0.gx:0, ry=p0?p0.gy:0;
+    if(players===1){ rx=rx||kx||touchIn.x; ry=ry||ky||touchIn.y; }
+    player.drive(rx,ry,ACC,MAX,FRIC,SKID);
+    player.airControl(rx,ry);
     player.step();
-    trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
-    if(trail.length>400) trail.shift();
+    if(players===2 && blueW){
+      // blue: keyboard (P2), plus pad 1 when two controllers are connected
+      let bx=kx||touchIn.x, by=ky||touchIn.y;
+      if(p1){ bx=bx||p1.gx; by=by||p1.gy; }
+      blueW.drive(bx,by,ACC,MAX,FRIC,SKID);
+      blueW.airControl(bx,by);
+      blueW.step();
+    } else {
+      trail.push({x:player.x,y:player.y,n:{...player.n},face:player.face,animT:player.animT,air:player.air});
+      if(trail.length>400) trail.shift();
+    }
     if(frame%20===0) bfs();
     ringStep();
-    // catch check
-    const centerX=player.x+player.n.x*20, centerY=player.y+player.n.y*20;
-    if(Math.hypot(centerX-ring.x, centerY-ring.y) < 30){
-      state='won';
-      winFx={x:ring.x, y:ring.y, t:0};
-      if(music&&!music.muted) jingle();
+    // catch check: either player can take the ring
+    for(const w of (blueW?[player,blueW]:[player])){
+      const cx2=w.x+w.n.x*20, cy2=w.y+w.n.y*20;
+      if(Math.hypot(cx2-ring.x, cy2-ring.y) < 30){
+        state='won';
+        winFx={x:ring.x, y:ring.y, t:0, holder:w};
+        if(music&&!music.muted) jingle();
+        break;
+      }
     }
   }
   if(state==='won' && winFx) winFx.t++;
+}
+function soundHint(){
+  if(actx && actx.state==='suspended' && music && !music.muted && lastPadCount>0 && frame%80<55)
+    pixText(ctx,'CLICK FOR SOUND', WNAT/2, HNAT-5*4-10, 4, F35,3,5, '#c8b890','#8a7758', true);
 }
 function render(){
   if(state==='title'){
@@ -1098,13 +1251,48 @@ function render(){
     const logoY = ISL.y0 + (ISLH - logoH)/2;           // centred on the block
     pixText(ctx,'RING', WNAT/2, logoY, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
     pixText(ctx,'CHASE',WNAT/2, logoY+7*LAY.logoPx+10, LAY.logoPx, F57,5,7, '#f8d838','#c8952c', true);
-    // flashing prompt
-    if(frame%70<45)
+    if(titlePhase==='char'){
+      // -------- simple hero selector --------
+      const px=LAY.promptPx;
+      pixText(ctx,'PLAYER 1', WNAT/2, ISL.y1+1.1*T, px, F35,3,5, '#f8f0dc','#c8b890', true);
+      const sc=1.6, gap=WNAT*0.16;
+      const chars=[{spr:SPR.redA},{spr:SPR.blueA}];
+      const baseY=ISL.y1+1.1*T + 5*px + 18;
+      for(let i=0;i<2;i++){
+        const spr=chars[i].spr;
+        const w=spr.width*sc, h=spr.height*sc;
+        const cxx=WNAT/2 + (i===0?-gap:gap);
+        const sel=i===charSel;
+        const bob=sel?Math.sin(frame*0.12)*3:0;
+        ctx.save();
+        ctx.globalAlpha=sel?1:0.42;
+        ctx.imageSmoothingEnabled=false;
+        ctx.drawImage(spr, Math.round(cxx-w/2), Math.round(baseY+bob), Math.round(w), Math.round(h));
+        ctx.restore();
+        if(sel){
+          pixText(ctx,'>', cxx-w/2-14, baseY+h*0.4, px, F35,3,5, '#f8d838','#c8952c', true);
+          pixText(ctx,'<', cxx+w/2+14, baseY+h*0.4, px, F35,3,5, '#f8d838','#c8952c', true);
+        }
+      }
+    } else
+    // prompt / player-count menu (2P offered only with a controller)
+    if(twoPAvailable()){
+      const px=LAY.promptPx;
+      const opts=['1 PLAYER','2 PLAYERS'];
+      for(let i=0;i<2;i++){
+        const y=ISL.y1+1.5*T + i*(5*px+14);
+        const sel=i===menuSel;
+        const label=(sel?'> ':'. ')+opts[i]+(sel?' <':' .');
+        pixText(ctx,label.replace(/\./g,' '), WNAT/2, y, px, F35,3,5,
+                sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
+      }
+    } else if(frame%70<45)
       pixText(ctx,'PRESS ANY BUTTON', WNAT/2, ISL.y1+2.0*T, LAY.promptPx, F35,3,5, '#f8f0dc','#c8b890', true);
     // cozy vignette
     const tv=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
     tv.addColorStop(0,'rgba(0,0,0,0)'); tv.addColorStop(1,'rgba(15,6,0,0.30)');
     ctx.fillStyle=tv; ctx.fillRect(0,0,WNAT,HNAT);
+    soundHint();
     return;
   }
 
@@ -1122,31 +1310,40 @@ function render(){
     ctx.drawImage(SPR.ring, Math.round(ring.x-SPR.ring.width/2), Math.round(ring.y-SPR.ring.height/2));
   }
 
-  // blue follower
-  const bs = trailFollow();
-  if(bs) drawWalker(null, SPR.blueA, SPR.blueB, bs, blueVis);
-  else {
-    // idle beside start
-    drawWalker(null, SPR.blueA, SPR.blueB, {x:LAY.blueIdle.x*T,y:LAY.blueIdle.y*T,n:{x:0,y:-1},face:1,animT:0}, blueVis);
+  // sprite assignment: in 1P the chosen hero is player-controlled, the other follows
+  const heroRed = players===2 || p1Char==='red';
+  const P1S = heroRed ? {a:SPR.redA,b:SPR.redB,vis:redVis} : {a:SPR.blueA,b:SPR.blueB,vis:blueVis};
+  const P2S = heroRed ? {a:SPR.blueA,b:SPR.blueB,vis:blueVis} : {a:SPR.redA,b:SPR.redB,vis:redVis};
+  if(players===2 && blueW){
+    drawWalker(blueW, P2S.a, P2S.b, null, P2S.vis);
+  } else {
+    const bs = trailFollow();
+    if(bs) drawWalker(null, P2S.a, P2S.b, bs, P2S.vis);
+    else drawWalker(null, P2S.a, P2S.b, {x:LAY.blueIdle.x*T,y:LAY.blueIdle.y*T,n:{x:0,y:-1},face:1,animT:0}, P2S.vis);
   }
-  // red player
-  drawWalker(player, SPR.redA, SPR.redB, null, redVis);
+  drawWalker(player, P1S.a, P1S.b, null, P1S.vis);
 
   // gentle warm vignette (warmth lives in the dirt palette; corridors stay deep dark)
   const vg=ctx.createRadialGradient(WNAT/2,HNAT/2,HNAT*0.45,WNAT/2,HNAT/2,HNAT*1.05);
   vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(15,6,0,0.30)');
   ctx.fillStyle=vg; ctx.fillRect(0,0,WNAT,HNAT);
+  soundHint();
 
   if(state==='paused'){
     ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,WNAT,HNAT);
     ctx.textAlign='center';
     const fp=Math.min(46, WNAT*0.075);
     ctx.font='bold '+fp+'px monospace';
-    ctx.fillStyle='#1a0d04'; ctx.fillText('PAUSED', WNAT/2+3, HNAT/2-5);
-    ctx.fillStyle='#f8e8b0'; ctx.fillText('PAUSED', WNAT/2, HNAT/2-8);
-    ctx.font=Math.min(20, WNAT*0.036)+'px monospace';
-    ctx.fillStyle='#e8d8b0';
-    ctx.fillText('P / Start / pause button to resume', WNAT/2, HNAT/2+fp*0.7);
+    ctx.fillStyle='#1a0d04'; ctx.fillText('PAUSED', WNAT/2+3, HNAT/2-fp*1.1+3);
+    ctx.fillStyle='#f8e8b0'; ctx.fillText('PAUSED', WNAT/2, HNAT/2-fp*1.1);
+    const px=LAY.promptPx;
+    const opts=['RESUME','MAIN MENU'];
+    for(let i=0;i<2;i++){
+      const y=HNAT/2 - fp*0.4 + i*(5*px+14);
+      const sel=i===pauseSel;
+      pixText(ctx,(sel?'> ':'  ')+opts[i]+(sel?' <':'  '), WNAT/2, y, px, F35,3,5,
+              sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
+    }
   }
 
   if(state==='won'){
@@ -1195,7 +1392,8 @@ function render(){
         ctx.drawImage(ec,0,0,ec.width,ec.height,0,0,ec.width*FS,ec.height*FS);
       }
       // the champion holds the ring overhead
-      const rx=player.x+player.n.x*54, ry=player.y+player.n.y*54;
+      const champ=(winFx&&winFx.holder)||player;
+      const rx=champ.x+champ.n.x*54, ry=champ.y+champ.n.y*54;
       ctx.drawImage(SPR.ring, Math.round(rx-SPR.ring.width/2), Math.round(ry-SPR.ring.height/2));
     }
     ctx.textAlign='center';
@@ -1214,6 +1412,11 @@ function render(){
 }
 enterTitle(preferredLayout());
 applyLayout();
+if(soundPref()==='on'){
+  initAudio();
+  actx.resume().catch(()=>{});
+  if(music&&actx){ music.ptr=[0,0,0]; music.loopStart=actx.currentTime+0.15; }
+}
 loop();
 </script>
 </body>
