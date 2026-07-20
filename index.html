@@ -18,7 +18,8 @@
   #wrap{display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:0;}
   body.touch #wrap{padding-top:env(safe-area-inset-top, 0px);box-sizing:border-box;
        align-items:flex-start;}
-  canvas{image-rendering:pixelated;image-rendering:crisp-edges;}
+  #cv{image-rendering:pixelated;image-rendering:crisp-edges;}
+  #glcv{position:fixed;display:none;pointer-events:none;z-index:5;image-rendering:auto;}
   #ui{display:none;position:fixed;top:8px;left:50%;transform:translateX(-50%);color:#e8d8b0;
       font-family:monospace;font-size:13px;text-align:center;opacity:.85;pointer-events:none;
       text-shadow:1px 1px 0 #000;white-space:nowrap;max-width:96vw;overflow:hidden;}
@@ -70,6 +71,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
+<canvas id="glcv"></canvas>
 <div id="pad">
   <div id="stickzone">
     <div id="dpad">
@@ -188,6 +190,119 @@ function fit(){
   }
 }
 addEventListener('resize', fit);
+
+// ================= CRT post-process (WebGL, single pass, Pi-friendly) =================
+let crtOn=false, crtGL=null, crtFailed=false;
+const CRT_VERT = `
+attribute vec2 aPos;
+varying vec2 vUV;
+void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
+const CRT_FRAG = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uSrc;   // source (game) resolution
+uniform vec2 uOut;   // output resolution
+// gentle barrel curvature
+vec2 curve(vec2 uv){
+  uv = uv*2.0-1.0;
+  vec2 off = abs(uv.yx)/vec2(7.0, 5.5);
+  uv += uv*off*off;
+  return uv*0.5+0.5;
+}
+vec3 fetch(vec2 uv){ return texture2D(uTex, uv).rgb; }
+float gaus(float x, float s){ return exp(-(x*x)/(2.0*s*s)); }
+void main(){
+  vec2 uv = curve(vUV);
+  if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); return; }
+  // ---- scanline beam: sample the two nearest source lines, weight by a gaussian beam ----
+  float srcY = uv.y*uSrc.y - 0.5;
+  float baseY = floor(srcY);
+  float fY = srcY - baseY;
+  vec3 cA = fetch(vec2(uv.x,(baseY+0.5)/uSrc.y));
+  vec3 cB = fetch(vec2(uv.x,(baseY+1.5)/uSrc.y));
+  float wA = gaus(fY, 0.32);
+  float wB = gaus(1.0-fY, 0.32);
+  vec3 col = cA*wA + cB*wB;
+  // ---- horizontal bloom (a few cheap taps) ----
+  float bt = 1.0/uSrc.x;
+  vec3 bloom = fetch(vec2(uv.x-bt,(baseY+0.5)/uSrc.y))
+             + fetch(vec2(uv.x+bt,(baseY+0.5)/uSrc.y));
+  col += bloom*0.10*max(wA,wB);
+  // ---- aperture-grille RGB mask at output resolution ----
+  float px = vUV.x*uOut.x;
+  float ph = mod(px, 3.0);
+  vec3 mask;
+  if(ph<1.0) mask=vec3(1.0,0.65,0.65);
+  else if(ph<2.0) mask=vec3(0.65,1.0,0.65);
+  else mask=vec3(0.65,0.65,1.0);
+  col *= mask;
+  // ---- gamma lift + brightness compensation for the darkening from lines/mask ----
+  col = pow(clamp(col,0.0,1.0), vec3(0.75));
+  col *= 1.55;
+  // ---- vignette / tube edge falloff ----
+  vec2 vg = vUV*(1.0-vUV.yx);
+  float vig = pow(clamp(vg.x*vg.y*32.0,0.0,1.0), 0.22);
+  col *= vig;
+  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
+}`;
+function crtCompile(gl, type, src){
+  const sh=gl.createShader(type); gl.shaderSource(sh,src); gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){ console.warn('CRT shader:',gl.getShaderInfoLog(sh)); return null; }
+  return sh;
+}
+function initCRT(){
+  if(crtGL||crtFailed) return;
+  const g=document.getElementById('glcv');
+  const gl=g.getContext('webgl',{antialias:false,preserveDrawingBuffer:false,alpha:false});
+  if(!gl){ crtFailed=true; return; }
+  const vs=crtCompile(gl,gl.VERTEX_SHADER,CRT_VERT), fs=crtCompile(gl,gl.FRAGMENT_SHADER,CRT_FRAG);
+  if(!vs||!fs){ crtFailed=true; return; }
+  const prog=gl.createProgram(); gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ crtFailed=true; return; }
+  gl.useProgram(prog);
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
+  const aPos=gl.getAttribLocation(prog,'aPos'); gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  crtGL={canvas:g, gl, prog, tex,
+    uSrc:gl.getUniformLocation(prog,'uSrc'),
+    uOut:gl.getUniformLocation(prog,'uOut'),
+    uTex:gl.getUniformLocation(prog,'uTex')};
+  gl.uniform1i(crtGL.uTex,0);
+}
+function drawCRT(){
+  if(crtFailed) { crtOn=false; document.getElementById('glcv').style.display='none'; return; }
+  if(!crtGL) initCRT();
+  if(!crtGL) return;
+  const g=crtGL.canvas, gl=crtGL.gl;
+  // overlay exactly on top of the game canvas
+  const r=cv.getBoundingClientRect();
+  const dpr=Math.min(window.devicePixelRatio||1, 2);
+  const ow=Math.max(1,Math.round(r.width*dpr)), oh=Math.max(1,Math.round(r.height*dpr));
+  g.style.left=r.left+'px'; g.style.top=r.top+'px';
+  g.style.width=r.width+'px'; g.style.height=r.height+'px';
+  if(g.width!==ow||g.height!==oh){ g.width=ow; g.height=oh; }
+  gl.viewport(0,0,ow,oh);
+  gl.bindTexture(gl.TEXTURE_2D,crtGL.tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,cv);
+  gl.uniform2f(crtGL.uSrc,WNAT,HNAT);
+  gl.uniform2f(crtGL.uOut,ow,oh);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+function applyCRT(on){
+  crtOn=!!on;
+  const g=document.getElementById('glcv');
+  if(crtOn && !crtFailed){ g.style.display='block'; cv.style.opacity='0.001'; }
+  else { g.style.display='none'; cv.style.opacity='1'; }
+}
+
 // touch devices get the Game Boy pad on the bottom half (unless a controller is connected)
 const isTouchDevice = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 function setPadVisible(v){
@@ -1011,7 +1126,7 @@ function loadButtonMap(){
 }
 function padPressedAny(p, list){ return list.some(i=>p.buttons[i]&&p.buttons[i].pressed); }
 let setSel=0;                // settings row: 0 MUSIC, 1 DIFFICULTY, 2 CONTROLS, 3 BACK
-const SET_ROWS=4;
+const SET_ROWS=5;   // MUSIC, DIFFICULTY, CRT, CONTROLS, BACK
 function musicOn(){ return soundPref()!=='off'; }
 // ---- controller button remap screen ----
 let remapStep=0;             // 0 = capture ACCEPT, 1 = capture BACK
@@ -1042,7 +1157,7 @@ function remapPrev(){         // d-pad LEFT
   else titlePhase='settings';                  // cancel (no save)
 }
 // live-preview working copies while inside the settings screen
-let wSound=true, wDiff=0, snapSound=true;
+let wSound=true, wDiff=0, snapSound=true, wCrt=false, snapCrt=false;
 function applyMusic(on){
   if(!actx) initAudio();
   if(music){ music.muted=!on; music.master.gain.value=on?0.9:0;
@@ -1051,23 +1166,28 @@ function applyMusic(on){
 function enterSettings(){
   titlePhase='settings'; setSel=0;
   wSound=musicOn(); snapSound=wSound; wDiff=diffSel;
+  wCrt=crtOn; snapCrt=crtOn;
 }
 function settingsChange(dx){      // left/right on a value row
   if(setSel===0){ wSound=!wSound; applyMusic(wSound); }         // MUSIC live-toggles
   else if(setSel===1){ wDiff=(wDiff+(dx>0?1:-1)+DIFFS.length)%DIFFS.length; } // DIFFICULTY preview
+  else if(setSel===2){ wCrt=!wCrt; applyCRT(wCrt); }            // CRT live preview
 }
-function settingsCommit(){        // persist music + difficulty
+function settingsCommit(){        // persist music + difficulty + crt
   setSoundPref(wSound?'on':'off');
   diffSel=wDiff; try{ localStorage.setItem('rc_diff', diffSel); }catch(e){}
+  try{ localStorage.setItem('rc_crt', wCrt?'1':'0'); }catch(e){}
 }
 function settingsConfirm(){       // A on the highlighted row
   if(setSel===0){ wSound=!wSound; applyMusic(wSound); }         // toggle music
   else if(setSel===1){ wDiff=(wDiff+1)%DIFFS.length; }          // cycle difficulty
-  else if(setSel===2){ settingsCommit(); enterRemap(); }        // CONTROLS -> remap
+  else if(setSel===2){ wCrt=!wCrt; applyCRT(wCrt); }            // toggle CRT
+  else if(setSel===3){ settingsCommit(); enterRemap(); }        // CONTROLS -> remap
   else { settingsCommit(); titlePhase='menu'; }                 // BACK -> save & return
 }
 function settingsCancel(){        // B: revert changes + back to menu
   applyMusic(snapSound);          // restore live music state
+  applyCRT(snapCrt);              // restore CRT state
   titlePhase='menu';              // diffSel/soundPref never committed
 }
 let blueW=null;              // blue as a real player in 2P
@@ -1413,6 +1533,7 @@ function loop(now){
   while(accT>=STEP && ticks<5){ tick(pads); accT-=STEP; ticks++; }
   if(ticks===5) accT=0;            // machine overloaded: drop the backlog
   render();
+  if(crtOn) drawCRT();
 }
 function padEdges(pads){
   for(let i=0;i<pads.length;i++){
@@ -1567,10 +1688,11 @@ function render(){
       const px=LAY.promptPx;
       const rows=['MUSIC   '+(wSound?'ON':'OFF'),
                   'DIFFICULTY   '+DIFFS[wDiff].name,
+                  'CRT   '+(wCrt?'ON':'OFF'),
                   'CONTROLS',
                   'BACK'];
       for(let i=0;i<rows.length;i++){
-        const y=ISL.y1+1.15*T + i*(5*px+13);
+        const y=ISL.y1+1.05*T + i*(5*px+11);
         const sel=i===setSel;
         pixText(ctx,(sel?'> ':'  ')+rows[i]+(sel?' <':'  '), WNAT/2, y, px, F35,3,5,
                 sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
@@ -1759,6 +1881,7 @@ function render(){
 }
 try{ const d=parseInt(localStorage.getItem('rc_diff')); if(d>=0&&d<DIFFS.length) diffSel=d; }catch(e){}
 loadButtonMap();
+try{ if(localStorage.getItem('rc_crt')==='1'){ applyCRT(true); } }catch(e){}
 enterTitle(preferredLayout());
 applyLayout();
 if(soundPref()==='on'){
