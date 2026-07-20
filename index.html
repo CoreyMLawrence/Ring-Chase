@@ -492,15 +492,24 @@ function trailFollow(){
 
 // ring: cell-to-cell glider fleeing red
 const ring = {x:(LAY.ringCell.i+0.5)*T, y:(LAY.ringCell.j+0.5)*T,
-              tx:LAY.ringCell.i, ty:LAY.ringCell.j, speed:2.35, prev:null, bob:0};
+              tx:LAY.ringCell.i, ty:LAY.ringCell.j, speed:2.35, prev:null, bob:0,
+              tpPhase:0, tpT:0, tpCd:0, tpX:0, tpY:0};   // teleport animation state
 
 // BFS distances from each player's cell (recomputed periodically)
-let distR=null, distB=null;
-function bfsFrom(w){
-  const pi=Math.max(0,Math.min(NI-1,Math.floor(w.x/T)));
-  const pj=Math.max(0,Math.min(NJ-1,Math.floor(w.y/T)));
+let distR=null, distB=null;       // from current player cells
+let predR=null, predB=null;       // from predicted player cells (smart mode)
+function cellOf(w){ return [Math.max(0,Math.min(NI-1,Math.floor(w.x/T))),
+                            Math.max(0,Math.min(NJ-1,Math.floor(w.y/T)))]; }
+function bfsFromCell(ci,cj){
   const d=Array.from({length:NJ},()=>Array(NI).fill(-1));
-  const q=[[pi,pj]]; d[pj][pi]=0;
+  if(LAY.maze[cj][ci]===1){ // seed neighbours if the exact cell is solid
+    // find nearest open cell
+    for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const ni2=ci+di,nj2=cj+dj;
+      if(ni2>=0&&nj2>=0&&ni2<NI&&nj2<NJ&&LAY.maze[nj2][ni2]===0){ ci=ni2; cj=nj2; break; }
+    }
+  }
+  const q=[[ci,cj]]; d[cj][ci]=0;
   while(q.length){
     const [i,j]=q.shift();
     for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
@@ -512,7 +521,40 @@ function bfsFrom(w){
   }
   return d;
 }
-function bfs(){ distR=bfsFrom(player); distB=blueW?bfsFrom(blueW):null; }
+function bfsFrom(w){ const [ci,cj]=cellOf(w); return bfsFromCell(ci,cj); }
+// predict where a player will be N frames from now (extrapolate along its surface)
+function predictedCell(w, frames){
+  const t=tangent(w.n);
+  let px=w.x+t.x*w.v*frames, py=w.y+t.y*w.v*frames;
+  let ci=Math.floor(px/T), cj=Math.floor(py/T);
+  if(ci<0||cj<0||ci>=NI||cj>=NJ||LAY.maze[cj][ci]===1) return cellOf(w);
+  return [ci,cj];
+}
+// how many open cells are reachable from (ci,cj) within K steps, treating
+// `blocked` cells as walls — i.e. how much room-to-run this choice keeps
+function escapeCount(ci,cj, blocked, K){
+  const seen=new Set([ci+','+cj]);
+  let q=[[ci,cj,0]], cnt=0, head=0;
+  while(head<q.length){
+    const [x,y,dd]=q[head++]; cnt++;
+    if(dd>=K) continue;
+    for(const[dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy, key=nx+','+ny;
+      if(nx<0||ny<0||nx>=NI||ny>=NJ) continue;
+      if(LAY.maze[ny][nx]===1 || blocked.has(key) || seen.has(key)) continue;
+      seen.add(key); q.push([nx,ny,dd+1]);
+    }
+  }
+  return cnt;
+}
+function bfs(){
+  distR=bfsFrom(player); distB=blueW?bfsFrom(blueW):null;
+  const D=curDiff();
+  if(D.algo==='smart'){
+    const [ri,rj]=predictedCell(player,D.predict); predR=bfsFromCell(ri,rj);
+    predB = blueW ? (([bi,bj])=>bfsFromCell(bi,bj))(predictedCell(blueW,D.predict)) : null;
+  } else { predR=null; predB=null; }
+}
 
 // ---------- input ----------
 const keys={};
@@ -917,10 +959,15 @@ let charSel=0, p1Char='red'; // chosen hero in 1P
 let modeSel=0, soloMode=false; // follow-the-leader vs solo (no trailing buddy)
 // ---- difficulty: EASY reproduces the original ring feel byte-for-byte ----
 const DIFFS=[
-  {name:'EASY',   spd:2.35, rnd:0.80, esc:0.0},  // wanders, slow, corners itself (unchanged)
-  {name:'NORMAL', spd:2.95, rnd:0.28, esc:1.1},  // brisk, purposeful, dodges dead-ends
-  {name:'HARD',   spd:3.28, rnd:0.10, esc:1.9},  // near player speed, sharp, trap-averse
-  {name:'EXPERT', spd:3.55, rnd:0.00, esc:2.7},  // faster than the player: catch it only by cutting it off
+  // EASY keeps the original greedy one-step brain, exactly as before.
+  {name:'EASY',   spd:2.35, algo:'greedy', rnd:0.80, esc:0.0},
+  // smart brain: flee the player's PREDICTED position + keep escape-volume open.
+  // NORMAL vs HARD differ mainly by speed (same smarts).
+  {name:'NORMAL', spd:2.80, algo:'smart', predict:8,  floodK:10, wEsc:0.14, rnd:0.14},
+  {name:'HARD',   spd:3.15, algo:'smart', predict:8,  floodK:10, wEsc:0.14, rnd:0.06},
+  // EXPERT: top speed, strongest smarts, and teleports away when cornered.
+  {name:'EXPERT', spd:3.45, algo:'smart', predict:12, floodK:15, wEsc:0.24, rnd:0.00,
+                  teleport:true, tpNear:4, tpChance:0.6, tpCool:150},
 ];
 let diffSel=0;               // persisted 0..3
 function curDiff(){ return DIFFS[diffSel]; }
@@ -1209,41 +1256,97 @@ function reset(){
   ring.x=(LAY.ringCell.i+0.5)*T; ring.y=(LAY.ringCell.j+0.5)*T;
   ring.tx=LAY.ringCell.i; ring.ty=LAY.ringCell.j; ring.prev=null;
   ring.speed=curDiff().spd;              // difficulty sets flee speed
+  ring.tpPhase=0; ring.tpT=0; ring.tpCd=90;
   trail.length=0;
   state='play';
 }
 
 // ---------- ring AI ----------
 function ringStep(){
+  const D=curDiff();
+  if(ring.tpCd>0) ring.tpCd--;
+
+  // --- teleport animation in progress (EXPERT): freeze normal movement ---
+  if(ring.tpPhase>0){
+    ring.tpT++;
+    const OUT=8;
+    if(ring.tpPhase===1 && ring.tpT>=OUT){
+      // relocate to the safest far cell at the midpoint
+      ring.tx=ring.tpX; ring.ty=ring.tpY;
+      ring.x=(ring.tx+0.5)*T; ring.y=(ring.ty+0.5)*T; ring.prev=null;
+      ring.tpPhase=2; ring.tpT=0;
+    } else if(ring.tpPhase===2 && ring.tpT>=8){
+      ring.tpPhase=0; ring.tpCd=D.tpCool||150;
+    }
+    ring.bob+=0.05;
+    return;
+  }
+
   // target cell center
   const cx=(ring.tx+0.5)*T, cy=(ring.ty+0.5)*T;
   const dx=cx-ring.x, dy=cy-ring.y;
   const d=Math.hypot(dx,dy);
   if(d<ring.speed){
     ring.x=cx; ring.y=cy;
-    // choose next cell: maximize dist from player, avoid reversing
-    let best=null, bestScore=-1e9;
-    const opts=[];
-    for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      const ni2=ring.tx+di, nj2=ring.ty+dj;
-      if(ni2<0||nj2<0||ni2>=NI||nj2>=NJ||LAY.maze[nj2][ni2]===1) continue;
-      const dR=(distR&&distR[nj2][ni2]>=0)?distR[nj2][ni2]:0;
-      const dB=(distB&&distB[nj2][ni2]>=0)?distB[nj2][ni2]:dR;
-      let score=Math.min(dR,dB);          // flee whichever player is closer
-      const D=curDiff();
-      if(D.esc){
-        // seek junctions, avoid dead-ends (harder to trap) — intelligence lever
-        let deg=0;
-        for(const[ei,ej] of [[1,0],[-1,0],[0,1],[0,-1]]){
-          const ai=ni2+ei, aj=nj2+ej;
-          if(ai>=0&&aj>=0&&ai<NI&&aj<NJ&&LAY.maze[aj][ai]===0) deg++;
+
+    // --- EXPERT: teleport when cornered (occasionally, on a cooldown) ---
+    if(D.teleport && ring.tpCd<=0){
+      const here=Math.min(distR?distR[ring.ty][ring.tx]:99,
+                          distB?distB[ring.ty][ring.tx]:99);
+      if(here<=(D.tpNear||4) && Math.random()<(D.tpChance||0.6)){
+        // pick the open cell that maximises min-distance from all players
+        let bi=ring.tx,bj=ring.ty,bs=-1;
+        for(let j=0;j<NJ;j++)for(let i=0;i<NI;i++){
+          if(LAY.maze[j][i]===1) continue;
+          const dd=Math.min(distR?distR[j][i]:99, distB?distB[j][i]:99);
+          if(dd>bs){ bs=dd; bi=i; bj=j; }
         }
-        score+=(deg-2)*D.esc;
+        if(bs>=6){ ring.tpX=bi; ring.tpY=bj; ring.tpPhase=1; ring.tpT=0; ring.bob+=0.05; return; }
       }
-      if(ring.prev && ni2===ring.prev[0] && nj2===ring.prev[1]) score-=2.5;
-      score+=Math.random()*D.rnd;
-      opts.push([ni2,nj2,score]);
-      if(score>bestScore){bestScore=score;best=[ni2,nj2];}
+    }
+
+    // choose next cell
+    let best=null, bestScore=-1e9;
+    if(D.algo==='smart'){
+      // blocked = players' current + predicted cells (don't route through them)
+      const blocked=new Set();
+      const [rc,rr]=cellOf(player); blocked.add(rc+','+rr);
+      const [pri,prj]=predictedCell(player,D.predict); blocked.add(pri+','+prj);
+      if(blueW){ const [bc,br]=cellOf(blueW); blocked.add(bc+','+br);
+                 const [pbi,pbj]=predictedCell(blueW,D.predict); blocked.add(pbi+','+pbj); }
+      for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const ni2=ring.tx+di, nj2=ring.ty+dj;
+        if(ni2<0||nj2<0||ni2>=NI||nj2>=NJ||LAY.maze[nj2][ni2]===1) continue;
+        // flee the PREDICTED player position (falls back to current)
+        const fr=(predR&&predR[nj2][ni2]>=0)?predR[nj2][ni2]:(distR?distR[nj2][ni2]:0);
+        const fb=(predB&&predB[nj2][ni2]>=0)?predB[nj2][ni2]:(distB?distB[nj2][ni2]:fr);
+        let score=Math.min(fr,fb);
+        // escape-volume: how much room this choice keeps open
+        score += D.wEsc * escapeCount(ni2,nj2, blocked, D.floodK||10);
+        if(ring.prev && ni2===ring.prev[0] && nj2===ring.prev[1]) score-=2.5;
+        if(D.rnd) score+=Math.random()*D.rnd;
+        if(score>bestScore){bestScore=score;best=[ni2,nj2];}
+      }
+    } else {
+      // EASY: original greedy one-step brain (unchanged)
+      for(const[di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const ni2=ring.tx+di, nj2=ring.ty+dj;
+        if(ni2<0||nj2<0||ni2>=NI||nj2>=NJ||LAY.maze[nj2][ni2]===1) continue;
+        const dR=(distR&&distR[nj2][ni2]>=0)?distR[nj2][ni2]:0;
+        const dB=(distB&&distB[nj2][ni2]>=0)?distB[nj2][ni2]:dR;
+        let score=Math.min(dR,dB);
+        if(D.esc){
+          let deg=0;
+          for(const[ei,ej] of [[1,0],[-1,0],[0,1],[0,-1]]){
+            const ai=ni2+ei, aj=nj2+ej;
+            if(ai>=0&&aj>=0&&ai<NI&&aj<NJ&&LAY.maze[aj][ai]===0) deg++;
+          }
+          score+=(deg-2)*D.esc;
+        }
+        if(ring.prev && ni2===ring.prev[0] && nj2===ring.prev[1]) score-=2.5;
+        score+=Math.random()*D.rnd;
+        if(score>bestScore){bestScore=score;best=[ni2,nj2];}
+      }
     }
     if(best){
       ring.prev=[ring.tx,ring.ty];
@@ -1528,10 +1631,28 @@ function render(){
   // ring (not animated, just moves) with a soft warm glow.
   // once caught, the world ring disappears — it's drawn in the player's hands instead
   if(state!=='won'){
+    // teleport scale/alpha: shrink out (phase 1) then pop in (phase 2)
+    let scale=1, alpha=1;
+    if(ring.tpPhase===1){ const p=Math.min(ring.tpT/8,1); scale=1-p*0.9; alpha=1-p; }
+    else if(ring.tpPhase===2){ const p=Math.min(ring.tpT/8,1); scale=0.1+p*0.9; alpha=p; }
     const g=ctx.createRadialGradient(ring.x,ring.y,4,ring.x,ring.y,70);
-    g.addColorStop(0,'rgba(255,230,150,0.20)'); g.addColorStop(1,'rgba(255,230,150,0)');
+    g.addColorStop(0,'rgba(255,230,150,'+(0.20*alpha).toFixed(3)+')'); g.addColorStop(1,'rgba(255,230,150,0)');
     ctx.fillStyle=g; ctx.fillRect(ring.x-70,ring.y-70,140,140);
-    ctx.drawImage(SPR.ring, Math.round(ring.x-SPR.ring.width/2), Math.round(ring.y-SPR.ring.height/2));
+    // a bright flash ring at the moment of vanish / arrival
+    if(ring.tpPhase>0){
+      const fp = ring.tpPhase===1 ? ring.tpT/8 : 1-ring.tpT/8;
+      const fr = 12 + fp*54;
+      ctx.save();
+      ctx.globalAlpha=Math.max(0,0.85*fp);
+      ctx.strokeStyle='#fff2c8'; ctx.lineWidth=4;
+      ctx.beginPath(); ctx.arc(ring.x,ring.y,fr,0,Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.globalAlpha=Math.max(0,alpha);
+    ctx.translate(ring.x,ring.y); ctx.scale(scale,scale);
+    ctx.drawImage(SPR.ring, Math.round(-SPR.ring.width/2), Math.round(-SPR.ring.height/2));
+    ctx.restore();
   }
 
   // sprite assignment: in 1P the chosen hero is player-controlled, the other follows
