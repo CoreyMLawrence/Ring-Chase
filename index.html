@@ -203,44 +203,61 @@ varying vec2 vUV;
 uniform sampler2D uTex;
 uniform vec2 uSrc;   // source (game) resolution
 uniform vec2 uOut;   // output resolution
-// gentle barrel curvature
+// gentle barrel curvature (tube bulge)
 vec2 curve(vec2 uv){
   uv = uv*2.0-1.0;
   vec2 off = abs(uv.yx)/vec2(7.0, 5.5);
   uv += uv*off*off;
   return uv*0.5+0.5;
 }
-vec3 fetch(vec2 uv){ return texture2D(uTex, uv).rgb; }
 float gaus(float x, float s){ return exp(-(x*x)/(2.0*s*s)); }
+// one phosphor scanline: horizontal gaussian in SOURCE pixels (CRTs are
+// continuous horizontally — detail survives; only vertical is quantized)
+vec3 lineSample(float ux, float yc, float sig, float stride){
+  vec3 acc=vec3(0.0); float wt=0.0;
+  for(int i=-2;i<=2;i++){
+    float ox=float(i)*stride;
+    float w=gaus(ox,sig);
+    acc+=texture2D(uTex, vec2(ux+ox/uSrc.x, yc)).rgb*w; wt+=w;
+  }
+  return acc/wt;
+}
 void main(){
   vec2 uv = curve(vUV);
   if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); return; }
-  // ---- scanline beam: sample the two nearest source lines, weight by a gaussian beam ----
-  float srcY = uv.y*uSrc.y - 0.5;
-  float baseY = floor(srcY);
-  float fY = srcY - baseY;
-  vec3 cA = fetch(vec2(uv.x,(baseY+0.5)/uSrc.y));
-  vec3 cB = fetch(vec2(uv.x,(baseY+1.5)/uSrc.y));
-  float wA = gaus(fY, 0.32);
-  float wB = gaus(1.0-fY, 0.32);
+  // scanlines every 2 source px (matches the art's pixel size; eyes stay on a line)
+  float Vy = uSrc.y/2.0;
+  float py = uv.y*Vy - 0.5;
+  float y0 = floor(py), fy = py - y0;
+  float ycA=(y0+0.5)/Vy, ycB=(y0+1.5)/Vy;
+  // pixel body: crisp horizontal with a soft beam-spot blur (sigma < 1 source px)
+  vec3 cA = lineSample(uv.x, ycA, 0.55, 1.0);
+  vec3 cB = lineSample(uv.x, ycB, 0.55, 1.0);
+  // beam width grows with brightness -> bright pixels halo (Lottes trick)
+  float lA = dot(cA,vec3(0.30,0.55,0.15));
+  float lB = dot(cB,vec3(0.30,0.55,0.15));
+  float wA = gaus(fy,     0.30+0.20*lA);
+  float wB = gaus(1.0-fy, 0.30+0.20*lB);
   vec3 col = cA*wA + cB*wB;
-  // ---- horizontal bloom (a few cheap taps) ----
-  float bt = 1.0/uSrc.x;
-  vec3 bloom = fetch(vec2(uv.x-bt,(baseY+0.5)/uSrc.y))
-             + fetch(vec2(uv.x+bt,(baseY+0.5)/uSrc.y));
-  col += bloom*0.10*max(wA,wB);
-  // ---- aperture-grille RGB mask at output resolution ----
-  float px = vUV.x*uOut.x;
-  float ph = mod(px, 3.0);
-  vec3 mask;
-  if(ph<1.0) mask=vec3(1.0,0.65,0.65);
-  else if(ph<2.0) mask=vec3(0.65,1.0,0.65);
-  else mask=vec3(0.65,0.65,1.0);
+  // crisp detail layer: pull small dark features (eyes!) back through the glow
+  vec3 sharp = texture2D(uTex, uv).rgb;
+  col = mix(col, sharp*max(wA,wB), 0.42);
+  // soft wide bloom, gated by local darkness: glow spreads AROUND bright pixels
+  // but never pours INTO dark details (keeps eyes/mouth black)
+  float dark = smoothstep(0.02, 0.30, dot(sharp,vec3(0.30,0.55,0.15)));
+  vec3 gA = lineSample(uv.x, ycA, 2.2, 2.0);
+  vec3 gB = lineSample(uv.x, ycB, 2.2, 2.0);
+  col += (gA*gaus(fy,0.60) + gB*gaus(1.0-fy,0.60)) * 0.24 * (0.30+0.70*dark);
+  // subtle aperture grille (keeps vibrance, still reads as phosphor stripes)
+  float ph = mod(vUV.x*uOut.x, 3.0);
+  vec3 mask = vec3(0.87);
+  if(ph<1.0) mask.r=1.0; else if(ph<2.0) mask.g=1.0; else mask.b=1.0;
   col *= mask;
-  // ---- gamma lift + brightness compensation for the darkening from lines/mask ----
-  col = pow(clamp(col,0.0,1.0), vec3(0.75));
-  col *= 1.55;
-  // ---- vignette / tube edge falloff ----
+  // vibrance: brightness + saturation boost instead of the old washy gamma lift
+  col *= 1.16;
+  float lum = dot(col,vec3(0.30,0.55,0.15));
+  col = mix(vec3(lum), col, 1.18);
+  // vignette / tube edge falloff (kept)
   vec2 vg = vUV*(1.0-vUV.yx);
   float vig = pow(clamp(vg.x*vg.y*32.0,0.0,1.0), 0.22);
   col *= vig;
@@ -268,8 +285,8 @@ function initCRT(){
   const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
   crtGL={canvas:g, gl, prog, tex,
     uSrc:gl.getUniformLocation(prog,'uSrc'),
@@ -1126,7 +1143,7 @@ function loadButtonMap(){
 }
 function padPressedAny(p, list){ return list.some(i=>p.buttons[i]&&p.buttons[i].pressed); }
 let setSel=0;                // settings row: 0 MUSIC, 1 DIFFICULTY, 2 CONTROLS, 3 BACK
-const SET_ROWS=5;   // MUSIC, DIFFICULTY, CRT, CONTROLS, BACK
+const SET_ROWS=4;   // MUSIC, DIFFICULTY, CRT, CONTROLS
 function musicOn(){ return soundPref()!=='off'; }
 // ---- controller button remap screen ----
 let remapStep=0;             // 0 = capture ACCEPT, 1 = capture BACK
@@ -1157,38 +1174,23 @@ function remapPrev(){         // d-pad LEFT
   else titlePhase='settings';                  // cancel (no save)
 }
 // live-preview working copies while inside the settings screen
-let wSound=true, wDiff=0, snapSound=true, wCrt=false, snapCrt=false;
 function applyMusic(on){
   if(!actx) initAudio();
   if(music){ music.muted=!on; music.master.gain.value=on?0.9:0;
              if(on && actx.state==='suspended') actx.resume().catch(()=>{}); }
 }
-function enterSettings(){
-  titlePhase='settings'; setSel=0;
-  wSound=musicOn(); snapSound=wSound; wDiff=diffSel;
-  wCrt=crtOn; snapCrt=crtOn;
+function enterSettings(){ titlePhase='settings'; setSel=0; }
+// what you see is what's saved: every change applies AND persists instantly
+function settingsChange(dx){
+  if(setSel===0){ const on=!musicOn(); applyMusic(on); setSoundPref(on?'on':'off'); }
+  else if(setSel===1){ diffSel=(diffSel+(dx>0?1:-1)+DIFFS.length)%DIFFS.length;
+                       try{ localStorage.setItem('rc_diff', diffSel); }catch(e){} }
+  else if(setSel===2){ applyCRT(!crtOn);
+                       try{ localStorage.setItem('rc_crt', crtOn?'1':'0'); }catch(e){} }
 }
-function settingsChange(dx){      // left/right on a value row
-  if(setSel===0){ wSound=!wSound; applyMusic(wSound); }         // MUSIC live-toggles
-  else if(setSel===1){ wDiff=(wDiff+(dx>0?1:-1)+DIFFS.length)%DIFFS.length; } // DIFFICULTY preview
-  else if(setSel===2){ wCrt=!wCrt; applyCRT(wCrt); }            // CRT live preview
-}
-function settingsCommit(){        // persist music + difficulty + crt
-  setSoundPref(wSound?'on':'off');
-  diffSel=wDiff; try{ localStorage.setItem('rc_diff', diffSel); }catch(e){}
-  try{ localStorage.setItem('rc_crt', wCrt?'1':'0'); }catch(e){}
-}
-function settingsConfirm(){       // A on the highlighted row
-  if(setSel===0){ wSound=!wSound; applyMusic(wSound); }         // toggle music
-  else if(setSel===1){ wDiff=(wDiff+1)%DIFFS.length; }          // cycle difficulty
-  else if(setSel===2){ wCrt=!wCrt; applyCRT(wCrt); }            // toggle CRT
-  else if(setSel===3){ settingsCommit(); enterRemap(); }        // CONTROLS -> remap
-  else { settingsCommit(); titlePhase='menu'; }                 // BACK -> save & return
-}
-function settingsCancel(){        // B: revert changes + back to menu
-  applyMusic(snapSound);          // restore live music state
-  applyCRT(snapCrt);              // restore CRT state
-  titlePhase='menu';              // diffSel/soundPref never committed
+function settingsConfirm(){       // A: change the row (same as right); CONTROLS opens remap
+  if(setSel===3) enterRemap();
+  else settingsChange(1);
 }
 let blueW=null;              // blue as a real player in 2P
 function kbTarget(){ return (players===2 && blueW) ? blueW : player; }
@@ -1325,7 +1327,7 @@ function titleAdvance(){          // A / Start / Space / Enter
   else if(titlePhase==='char'){ confirmChar(); }
 }
 function titleBack(){            // B / Escape
-  if(titlePhase==='settings') settingsCancel();
+  if(titlePhase==='settings') titlePhase='menu';   // everything already saved
   else if(titlePhase==='remap') remapPrev();
   else if(titlePhase==='mode') titlePhase='menu';
   else if(titlePhase==='char') titlePhase='mode';
@@ -1684,23 +1686,27 @@ function render(){
         }
       }
     } else if(titlePhase==='settings'){
-      // -------- settings panel --------
+      // -------- settings panel: name left, < value > right of the selected row --------
       const px=LAY.promptPx;
-      const rows=['MUSIC   '+(wSound?'ON':'OFF'),
-                  'DIFFICULTY   '+DIFFS[wDiff].name,
-                  'CRT   '+(wCrt?'ON':'OFF'),
-                  'CONTROLS',
-                  'BACK'];
+      const rows=[['MUSIC',       musicOn()?'ON':'OFF'],
+                  ['DIFFICULTY',  DIFFS[diffSel].name],
+                  ['CRT',         crtOn?'ON':'OFF'],
+                  ['CONTROLS',    null]];
       for(let i=0;i<rows.length;i++){
-        const y=ISL.y1+1.05*T + i*(5*px+11);
+        const y=ISL.y1+1.2*T + i*(5*px+13);
         const sel=i===setSel;
-        pixText(ctx,(sel?'> ':'  ')+rows[i]+(sel?' <':'  '), WNAT/2, y, px, F35,3,5,
+        const [name,val]=rows[i];
+        let label;
+        if(val===null) label = sel ? '> '+name+' <' : '  '+name+'  ';
+        else label = name+'  '+(sel?'< ':'  ')+val+(sel?' >':'  ');
+        pixText(ctx,label, WNAT/2, y, px, F35,3,5,
                 sel?'#f8f0dc':'#7d6a50', sel?'#c8b890':'#5e5040', true);
       }
     } else if(titlePhase==='remap'){
       // -------- controller button remap (any count per role) --------
       const px=Math.max(3,LAY.promptPx-1);
       const capturing = remapStep===0 ? 'ACCEPT' : 'BACK';
+      pixText(ctx,'STEP '+(remapStep+1)+' OF 2', WNAT/2, ISL.y1+0.55*T, Math.max(2,px-1), F35,3,5, '#a89060','#7d6a50', true);
       pixText(ctx,'SET '+capturing+' BUTTONS', WNAT/2, ISL.y1+0.9*T, px, F35,3,5, '#f8f0dc','#c8b890', true);
       pixText(ctx,'PRESS BUTTONS TO TOGGLE', WNAT/2, ISL.y1+0.9*T+5*px+14, Math.max(2,px-1), F35,3,5, '#a89060','#7d6a50', true);
       // live assigned lists via the crisp monospace font
@@ -1732,7 +1738,7 @@ function render(){
     // footer hint on sub-screens
     if(titlePhase!=='menu'){
       const px=Math.max(3,LAY.promptPx-1);
-      const hint = titlePhase==='settings' ? 'A SELECT   B CANCEL'
+      const hint = titlePhase==='settings' ? 'CHANGE   A SELECT   B DONE'
                  : titlePhase==='remap' ? (remapStep===0 ? 'DPAD RIGHT NEXT   LEFT CANCEL' : 'DPAD RIGHT SAVE   LEFT PREV')
                  : 'A SELECT   B BACK';
       pixText(ctx,hint, WNAT/2, HNAT-6*px, px, F35,3,5, '#8a7758','#5e5040', true);
